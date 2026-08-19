@@ -20,8 +20,7 @@ from google.genai import types
 
 from app.vision.schema import PILL_VISION_RESPONSE_SCHEMA, SYSTEM_PROMPT, build_user_prompt
 
-# TODO: 실제 사용 모델명으로 교체 (프로젝트 문서상 "Gemini Vision 3.7 Flash")
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.7-flash"
 
 
 class GeminiVisionError(Exception):
