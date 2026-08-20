@@ -25,4 +25,5 @@ jobs:
               "${{ secrets.MYSQL_PORT }}" \
               "${{ secrets.MYSQL_USER }}" \
               "${{ secrets.MYSQL_PASSWORD }}" \
-              "${{ secrets.MYSQL_DB }}"
+              "${{ secrets.MYSQL_DB }}" \
+              "${{ secrets.OPENAI_API_KEY }}"

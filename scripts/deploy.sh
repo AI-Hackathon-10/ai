@@ -9,6 +9,7 @@ MYSQL_PORT="${4:-3306}"
 MYSQL_USER="${5:-root}"
 MYSQL_PASSWORD="${6:-}"
 MYSQL_DB="${7:-pillcare}"
+OPENAI_API_KEY="${8:-}"
 
 IMAGE_NAME="pill-ai"
 CONTAINER_NAME="pill-ai"
@@ -35,6 +36,7 @@ docker run -d \
   -e MYSQL_USER="$MYSQL_USER" \
   -e MYSQL_PASSWORD="$MYSQL_PASSWORD" \
   -e MYSQL_DB="$MYSQL_DB" \
+  -e OPENAI_API_KEY="$OPENAI_API_KEY" \
   "$IMAGE_NAME"
 
 echo "=== Health check ==="
