@@ -95,11 +95,14 @@ class IdentifyResultItem(BaseModel):
 
     id: str
     ok: bool
+    match_status: Optional[str] = Field(default=None, alias="matchStatus")
     item_seq: Optional[str] = Field(default=None, alias="itemSeq")
     item_name: Optional[str] = Field(default=None, alias="itemName")
     image_url: Optional[str] = Field(default=None, alias="imageUrl")
     identification: Identification
     recommendation: Optional[Recommendation] = None
+    vision_result: Optional[VisionExtractionResult] = Field(default=None, alias="visionResult")
+    candidates: Optional[list[PillCandidate]] = None
     features: Optional[Features] = None
     official: Optional[Official] = None
     document: Optional[str] = None
@@ -116,7 +119,7 @@ def needs_official_detail(outcome: IdentifyFromDbOutcome) -> bool:
     )
 
 
-def build_identify_result(
+async def build_identify_result(
     *,
     id: str,
     outcome: IdentifyFromDbOutcome,
@@ -131,7 +134,7 @@ def build_identify_result(
     ok = candidate is not None
     identification = _identification(ok)
     official = _official(detail) if detail else None
-    recommendation = _recommendation(
+    recommendation = await _recommendation(
         ok,
         identification,
         detail,
@@ -141,14 +144,27 @@ def build_identify_result(
         symptom_started_at=symptom_started_at,
     )
 
+    match = outcome.match_result
+    match_status = match.status.value if match is not None and not outcome.vision_failed else None
+    candidates = (
+        match.candidates
+        if match is not None
+        and match.status in (MatchStatus.MULTIPLE_MATCHES, MatchStatus.NO_MATCH)
+        and match.candidates
+        else None
+    )
+
     return IdentifyResultItem(
         id=id,
         ok=ok,
+        match_status=match_status,
         item_seq=candidate.item_seq if candidate else None,
         item_name=candidate.item_name if candidate else None,
         image_url=_image_url(candidate, detail),
         identification=identification,
         recommendation=recommendation,
+        vision_result=vision,
+        candidates=candidates,
         features=_features(vision, candidate),
         official=official,
         document=_document(candidate, official, recommendation) if ok else None,
@@ -214,7 +230,7 @@ def _official(detail: DrugDetailApiItem) -> Official:
     )
 
 
-def _recommendation(
+async def _recommendation(
     ok: bool,
     identification: Identification,
     detail: Optional[DrugDetailApiItem],
@@ -244,7 +260,7 @@ def _recommendation(
             reason="현재 입력한 증상과 해당 의약품의 효능이 일치합니다.",
             caution=detail.precautions,
         )
-    draft = build_recommendation(
+    draft = await build_recommendation(
         identification=identification,
         detail=detail,
         symptoms=symptoms,

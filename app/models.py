@@ -102,6 +102,7 @@ class PillCandidate(BaseModel):
     line_front: Optional[str] = None
     line_back: Optional[str] = None
     form_code_name: Optional[str] = None
+    similarity_score: Optional[float] = None   # 0.0~1.0, 완화 매칭 시에만 채워짐
 
     @classmethod
     def from_item(cls, item: PillApiItem) -> "PillCandidate":

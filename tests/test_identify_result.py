@@ -1,6 +1,10 @@
 """판별 결과를 백엔드가 받는 camelCase result 리스트 항목으로 변환하는 로직을 검증한다."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
 from app.drug_detail_models import DrugDetailApiItem
 from app.identify_result import build_identify_result
 from app.models import MatchStatus, PillCandidate, PillMatchResult, VisionExtractionResult
@@ -50,8 +54,9 @@ def _tylenol_detail() -> DrugDetailApiItem:
     )
 
 
-def test_단일_매칭이면_ok_True와_camelCase_필드를_채운다():
-    item = build_identify_result(
+@pytest.mark.asyncio
+async def test_단일_매칭이면_ok_True와_camelCase_필드를_채운다():
+    item = await build_identify_result(
         id="1",
         outcome=_tylenol_outcome(),
         detail=_tylenol_detail(),
@@ -61,6 +66,10 @@ def test_단일_매칭이면_ok_True와_camelCase_필드를_채운다():
 
     assert payload["id"] == "1"
     assert payload["ok"] is True
+    assert payload["matchStatus"] == "SINGLE_MATCH"
+    assert payload["visionResult"] is not None
+    assert payload["visionResult"]["print_front"] == "TYLENOL"
+    assert payload["candidates"] is None
     assert payload["itemSeq"] == "199703222"
     assert payload["itemName"] == "타이레놀정500밀리그람"
     assert payload["imageUrl"].startswith("https://nedrug.mfds.go.kr/")
@@ -86,8 +95,9 @@ def test_단일_매칭이면_ok_True와_camelCase_필드를_채운다():
     assert "타이레놀정500밀리그람" in payload["document"]
 
 
-def test_Vision_실패면_ok_False이고_식별_필드는_비운다():
-    item = build_identify_result(
+@pytest.mark.asyncio
+async def test_Vision_실패면_ok_False이고_식별_필드는_비운다():
+    item = await build_identify_result(
         id="2",
         outcome=IdentifyFromDbOutcome(vision_failed=True),
     )
@@ -95,6 +105,9 @@ def test_Vision_실패면_ok_False이고_식별_필드는_비운다():
 
     assert payload["id"] == "2"
     assert payload["ok"] is False
+    assert payload["matchStatus"] is None
+    assert payload["visionResult"] is None
+    assert payload["candidates"] is None
     assert payload["itemSeq"] is None
     assert payload["itemName"] is None
     assert payload["imageUrl"] is None
@@ -104,8 +117,9 @@ def test_Vision_실패면_ok_False이고_식별_필드는_비운다():
     assert payload["document"] is None
 
 
-def test_증상이_효능과_안_맞으면_NOT_RECOMMENDED다():
-    item = build_identify_result(
+@pytest.mark.asyncio
+async def test_증상이_효능과_안_맞으면_NOT_RECOMMENDED다():
+    item = await build_identify_result(
         id="1",
         outcome=_tylenol_outcome(),
         detail=_tylenol_detail(),
@@ -114,11 +128,13 @@ def test_증상이_효능과_안_맞으면_NOT_RECOMMENDED다():
     payload = item.model_dump(by_alias=True)
 
     assert payload["ok"] is True
+    assert payload["matchStatus"] == "SINGLE_MATCH"
     assert payload["recommendation"]["status"] == "NOT_RECOMMENDED"
     assert "일치하지 않습니다" in payload["recommendation"]["reason"]
 
 
-def test_복수_후보면_확정하지_않고_ok_False다():
+@pytest.mark.asyncio
+async def test_복수_후보면_확정하지_않고_ok_False다():
     outcome = IdentifyFromDbOutcome(
         vision_failed=False,
         vision_result=VisionExtractionResult(color_class1="하양", drug_shape="원형"),
@@ -131,10 +147,66 @@ def test_복수_후보면_확정하지_않고_ok_False다():
             query_level_used="SHAPE_AND_COLOR",
         ),
     )
-    payload = build_identify_result(id="3", outcome=outcome).model_dump(by_alias=True)
+    payload = (await build_identify_result(id="3", outcome=outcome)).model_dump(by_alias=True)
 
     assert payload["ok"] is False
+    assert payload["matchStatus"] == "MULTIPLE_MATCHES"
+    assert payload["visionResult"] is not None
+    assert payload["candidates"] is not None
+    assert len(payload["candidates"]) == 2
     assert payload["itemSeq"] is None
     assert payload["features"]["shape"] == "ROUND"
     assert payload["features"]["color"] == "WHITE"
     assert payload["features"]["scoreLine"] is False
+
+
+@pytest.mark.asyncio
+async def test_NO_MATCH이고_완화후보가_있으면_candidates를_반환한다():
+    outcome = IdentifyFromDbOutcome(
+        vision_failed=False,
+        vision_result=VisionExtractionResult(
+            print_front="SJ",
+            print_back="V 8",
+            color_class1="주황",
+            drug_shape="원형",
+            score_line=True,
+        ),
+        match_result=PillMatchResult(
+            status=MatchStatus.NO_MATCH,
+            candidates=[
+                PillCandidate(
+                    item_seq="200810473",
+                    item_name="엑스반정80밀리그램(발사르탄)",
+                    similarity_score=0.775,
+                ),
+            ],
+            query_level_used="RELAXED_MATCH",
+        ),
+    )
+    payload = (await build_identify_result(id="4", outcome=outcome)).model_dump(by_alias=True)
+
+    assert payload["ok"] is False
+    assert payload["matchStatus"] == "NO_MATCH"
+    assert payload["candidates"] is not None
+    assert len(payload["candidates"]) == 1
+    assert payload["candidates"][0]["item_seq"] == "200810473"
+    assert payload["candidates"][0]["similarity_score"] == pytest.approx(0.775)
+    assert payload["itemSeq"] is None
+
+
+@pytest.mark.asyncio
+async def test_NO_MATCH이고_완화후보가_없으면_candidates는_None이다():
+    outcome = IdentifyFromDbOutcome(
+        vision_failed=False,
+        vision_result=VisionExtractionResult(color_class1="회색", drug_shape="기타"),
+        match_result=PillMatchResult(
+            status=MatchStatus.NO_MATCH,
+            candidates=[],
+            query_level_used="DIRECT_MATCH",
+        ),
+    )
+    payload = (await build_identify_result(id="5", outcome=outcome)).model_dump(by_alias=True)
+
+    assert payload["ok"] is False
+    assert payload["matchStatus"] == "NO_MATCH"
+    assert payload["candidates"] is None

@@ -111,6 +111,7 @@ def test_vision_failed면_그대로_응답에_반영된다(client, monkeypatch):
     body = response.json()
     result = body["result"][0]
     assert result["ok"] is False
+    assert result["matchStatus"] is None
 
 
 _BATCH_USER = {
@@ -377,6 +378,9 @@ def test_identify_db_batch는_result를_리스트로_반환한다(client, monkey
     first, second = body["result"]
     assert first["id"] == "1"
     assert first["ok"] is True
+    assert first["matchStatus"] == "SINGLE_MATCH"
+    assert first["visionResult"] is not None
+    assert first["visionResult"]["print_front"] == "TYLENOL"
     assert first["itemSeq"] == "199703222"
     assert first["itemName"] == "타이레놀정500밀리그람"
     assert first["identification"]["confidence"] == "HIGH"
@@ -387,3 +391,55 @@ def test_identify_db_batch는_result를_리스트로_반환한다(client, monkey
     assert second["id"] == "2"
     assert second["ok"] is False
     assert second["itemSeq"] is None
+
+
+def test_NO_MATCH시_완화매칭_후보가_result에_포함된다(client, monkeypatch):
+    """엑스반정 시나리오: 색상 불일치로 직접 매칭 실패 → 완화 매칭 후보가 candidates에 포함."""
+    vision = VisionExtractionResult(
+        print_front="SJ",
+        print_back="V 8",
+        color_class1="주황",
+        drug_shape="원형",
+        score_line=True,
+    )
+
+    async def fake_batch(items, matching_service):
+        return [
+            IdentifyFromDbOutcome(
+                vision_failed=False,
+                vision_result=vision,
+                match_result=PillMatchResult(
+                    status=MatchStatus.NO_MATCH,
+                    candidates=[
+                        PillCandidate(
+                            item_seq="200810473",
+                            item_name="엑스반정80밀리그램(발사르탄)",
+                            print_front="SJ",
+                            print_back="V분할선8",
+                            drug_shape="원형",
+                            color_class1="분홍",
+                            similarity_score=0.775,
+                        ),
+                    ],
+                    query_level_used="RELAXED_MATCH",
+                ),
+            )
+        ]
+
+    monkeypatch.setattr(main_mod, "identify_from_db_batch", fake_batch)
+
+    response = client.post(
+        "/identify",
+        json=_batch_body([{"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"}]),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    result = body["result"][0]
+    assert result["ok"] is False
+    assert result["matchStatus"] == "NO_MATCH"
+    assert result["candidates"] is not None
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0]["item_seq"] == "200810473"
+    assert result["candidates"][0]["similarity_score"] == pytest.approx(0.775)
+    assert result["itemSeq"] is None
