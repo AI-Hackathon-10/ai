@@ -1,5 +1,5 @@
 """
-FastAPI 앱 진입점. Step 2(Vision AI 추출) -> Step 3(낱알식별 API 매칭) -> Step 4(e약은요
+FastAPI 앱 진입점. Step 2(Vision AI 추출) -> Step 3(DB 매칭) -> Step 4(e약은요
 상세정보 조회)를 실제 HTTP 엔드포인트로 연결한다.
 
 로컬 실행 (uv 기준):
@@ -11,6 +11,8 @@ FastAPI 앱 진입점. Step 2(Vision AI 추출) -> Step 3(낱알식별 API 매�
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -25,12 +27,15 @@ from app.drug_detail_client import DrugDetailApiClient
 from app.drug_detail_service import DrugDetailService
 from app.drug_detail_models import DrugDetailApiItem
 from app.models import PillMatchResult, VisionExtractionResult
-from app.pill_identification_api_client import PillIdentificationApiClient
+from app.pill_data_loader import load_pill_data
 from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
 from app.pill_matching_service import PillMatchingService
 from app.pipeline import fetch_detail_for_selected_candidate, identify_from_db, identify_pill
+
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
+
+logger = logging.getLogger(__name__)
 
 _SWAGGER_PLACEHOLDERS = {"", "string", "null"}
 
@@ -126,12 +131,6 @@ def _decode_request_images(body: "IdentifyRequest") -> tuple[bytes, str, Optiona
 
 _http_client = httpx.AsyncClient(timeout=10.0)
 
-_pill_api_client = PillIdentificationApiClient(
-    service_key=settings.mfds_pill_service_key,
-    http_client=_http_client,
-)
-_matching_service = PillMatchingService(_pill_api_client)
-
 
 def _mysql_connect():
     import pymysql
@@ -147,7 +146,7 @@ def _mysql_connect():
     )
 
 
-_db_matching_service = PillMatchingService(
+_matching_service = PillMatchingService(
     MysqlPillCatalogClient(PillIdentificationRepository(connect=_mysql_connect))
 )
 
@@ -162,10 +161,22 @@ _detail_service = DrugDetailService(_detail_api_client)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 서버 시작 시 낱알식별 데이터를 백그라운드에서 DB에 적재한다.
+    # 적재가 완료되기 전에도 서버는 요청을 받을 수 있다.
+    task = asyncio.create_task(_startup_load_pill_data())
     yield
-    await _pill_api_client.aclose()
+    task.cancel()
     await _detail_api_client.aclose()
     await _http_client.aclose()
+
+
+async def _startup_load_pill_data():
+    """서버 시작 시 낱알식별 데이터 적재. 실패해도 서버는 정상 동작한다."""
+    try:
+        count = await load_pill_data()
+        logger.info("시작 시 낱알식별 데이터 적재 완료: %d건", count)
+    except Exception:
+        logger.exception("시작 시 낱알식별 데이터 적재 실패 — 기존 DB 데이터로 서비스합니다.")
 
 
 app = FastAPI(title="알약 식별 API", lifespan=lifespan)
@@ -185,7 +196,7 @@ async def health() -> dict:
 @app.post("/identify", response_model=IdentifyResponse)
 async def identify(body: IdentifyRequest):
     """Step 1(촬영)에서 넘어온 사진(base64 JSON body)으로 Step 2 -> 3 -> (조건부) 4 를
-    한 번에 실행한다.
+    한 번에 실행한다. pill_identification DB 테이블로 매칭한다.
 
     front_image는 필수이며 빈 문자열이면 400을 반환한다. base64 디코딩에 실패해도
     500이 아니라 400으로 응답한다(app/base64_images.py 의 decode_base64_image_or_400).
@@ -237,7 +248,7 @@ async def identify_db(body: IdentifyRequest):
     outcome = await identify_from_db(
         front_bytes,
         back_bytes,
-        _db_matching_service,
+        _matching_service,
         front_mime_type=front_mime_type,
         back_mime_type=back_mime_type,
     )
@@ -253,3 +264,15 @@ async def select_candidate(item_seq: str):
     """MULTIPLE_MATCHES 후보 목록에서 사용자가 하나를 고른 뒤 호출하는 Step 4 전용 엔드포인트."""
     detail = await fetch_detail_for_selected_candidate(item_seq, _detail_service)
     return SelectCandidateResponse(detail=detail)
+
+
+@app.post("/admin/reload-pill-data")
+async def reload_pill_data():
+    """낱알식별 API에서 전체 데이터를 다시 가져와 DB에 적재한다.
+    기존 데이터는 삭제하고 새로 넣는다."""
+    try:
+        count = await load_pill_data()
+        return {"status": "ok", "loaded_count": count}
+    except Exception as e:
+        logger.exception("수동 낱알식별 데이터 적재 실패")
+        raise HTTPException(status_code=500, detail=f"데이터 적재 실패: {e}") from e

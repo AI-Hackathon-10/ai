@@ -144,7 +144,7 @@ def test_identify_db는_vision_추출값으로_테이블_매칭_결과를_반환
 
     async def fake_identify_from_db(front_bytes, back_bytes, matching_service, **kwargs):
         assert front_bytes == _PNG_BYTES
-        assert matching_service is main_mod._db_matching_service
+        assert matching_service is main_mod._matching_service
         return IdentifyFromDbOutcome(
             vision_failed=False,
             vision_result=vision,

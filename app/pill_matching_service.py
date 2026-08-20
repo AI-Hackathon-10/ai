@@ -1,9 +1,5 @@
 """
-Vision AI 추출 결과 → 낱알식별 카탈로그를 로컬 필터해 의약품을 매칭한다.
-
-식약처 getMdcinGrnIdntfcInfoList03 요청변수에는 품목명/업체명/품목코드 등만 있고
-각인·색·모양은 없다. 그래서 API에 PRINT_FRONT 를 보내지 않고, 전체 목록을 받은 뒤
-응답 필드(PRINT_FRONT, DRUG_SHAPE, COLOR_CLASS1 …)로 걸러낸다.
+Vision AI 추출 결과 → pill_identification DB 테이블을 조회해 의약품을 매칭한다.
 
 핵심 아이디어: Vision AI 결과를 곧바로 한 번에 검색하지 않고,
 "가장 구체적인 조건 → 점점 완화되는 조건" 순서로 여러 레벨을 미리 만들어두고
@@ -12,6 +8,7 @@ Vision AI 추출 결과 → 낱알식별 카탈로그를 로컬 필터해 의약
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from app.models import (
     MatchStatus,
@@ -20,19 +17,13 @@ from app.models import (
     PillMatchResult,
     VisionExtractionResult,
 )
-from app.pill_identification_api_client import PillIdentificationApiClient
 
 PRINT_CONFIDENCE_THRESHOLD = 0.6
 MAX_CANDIDATES = 10
 
-_FILTER_ATTRS = {
-    "PRINT_FRONT": "print_front",
-    "PRINT_BACK": "print_back",
-    "DRUG_SHAPE": "drug_shape",
-    "COLOR_CLASS1": "color_class1",
-    "COLOR_CLASS2": "color_class2",
-}
-_PRINT_FILTERS = {"PRINT_FRONT", "PRINT_BACK"}
+
+class CatalogFinder(Protocol):
+    async def find(self, filters: dict[str, str], limit: int = ...) -> list[PillApiItem]: ...
 
 
 @dataclass
@@ -42,25 +33,17 @@ class _QueryLevel:
 
 
 class PillMatchingService:
-    def __init__(self, api_client: PillIdentificationApiClient):
-        self._api_client = api_client
+    def __init__(self, catalog_client: CatalogFinder):
+        self._client = catalog_client
 
     async def match(self, vision: VisionExtractionResult) -> PillMatchResult:
         levels = self._build_query_levels(vision)
-        finder = getattr(self._api_client.__class__, "find", None)
-        catalog: list[PillApiItem] | None = None
-        if not callable(finder):
-            catalog = await self._api_client.get_catalog()
 
         for index, level in enumerate(levels):
             if not level.params:
                 continue
 
-            if callable(finder):
-                matched = await self._api_client.find(level.params, limit=MAX_CANDIDATES + 1)
-            else:
-                assert catalog is not None
-                matched = [item for item in catalog if _item_matches(item, level.params)]
+            matched = await self._client.find(level.params, limit=MAX_CANDIDATES + 1)
             total = len(matched)
 
             if total == 0:
@@ -86,11 +69,7 @@ class PillMatchingService:
         )
 
     def _build_query_levels(self, v: VisionExtractionResult) -> list[_QueryLevel]:
-        """레벨은 '구체적인 것 → 넓은 것' 순서로 정의한다.
-
-        여기서 만드는 키(PRINT_FRONT, DRUG_SHAPE …)는 API 요청변수가 아니라
-        카탈로그 응답 필드로 로컬 필터할 때 쓰는 이름이다.
-        """
+        """레벨은 '구체적인 것 → 넓은 것' 순서로 정의한다."""
         levels: list[_QueryLevel] = []
 
         for print_fields, level_name in self._reliable_print_combinations(v):
@@ -152,23 +131,3 @@ class PillMatchingService:
     def _add_if_present(cls, target: dict[str, str], key: str, value: str | None) -> None:
         if cls._present(value):
             target[key] = value
-
-
-def _normalize_print(value: str) -> str:
-    return "".join(value.split()).casefold()
-
-
-def _item_matches(item: PillApiItem, filters: dict[str, str]) -> bool:
-    for key, expected in filters.items():
-        attr = _FILTER_ATTRS.get(key)
-        if attr is None:
-            continue
-        actual = getattr(item, attr, None)
-        if not actual or not str(actual).strip():
-            return False
-        if key in _PRINT_FILTERS:
-            if _normalize_print(str(actual)) != _normalize_print(expected):
-                return False
-        elif str(actual).strip() != expected.strip():
-            return False
-    return True

@@ -1,37 +1,28 @@
 """
-낱알식별 API 전체 데이터를 MySQL에 적재하는 스크립트.
+낱알식별 API 전체 데이터를 MySQL pill_identification 테이블에 적재한다.
 
-사용법:
-    pip install httpx pymysql python-dotenv
-    python scripts/load_pill_data.py
+서버 시작 시 lifespan에서 백그라운드로 호출하거나,
+POST /admin/reload-pill-data 엔드포인트로 수동 트리거할 수 있다.
 """
+from __future__ import annotations
+
 import asyncio
-import os
+import logging
 import urllib.parse
+from typing import Any
 
 import httpx
 import pymysql
-from dotenv import load_dotenv
 
-# .env 로드 (ai/.env → backend/.env 순서)
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "backend", ".env"))
+from app.config import settings
 
-# ── API 설정 ──
+logger = logging.getLogger(__name__)
+
 API_BASE_URL = "https://apis.data.go.kr/1471000/MdcinGrnIdntfcInfoService03/getMdcinGrnIdntfcInfoList03"
-SERVICE_KEY = os.environ["MFDS_PILL_SERVICE_KEY"]
 PAGE_SIZE = 100
 CONCURRENCY = 5
 TIMEOUT = 10.0
 
-# ── MySQL 설정 ──
-MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
-MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
-MYSQL_USER = os.getenv("DB_USERNAME", "root")
-MYSQL_PASSWORD = os.getenv("DB_PASSWORD", "")
-MYSQL_DB = os.getenv("MYSQL_DB", "pillcare")
-
-# ── 테이블 DDL ──
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS pill_identification (
     id             BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -71,13 +62,13 @@ FIELDS = [
 ]
 
 
-def normalize_service_key(raw_key: str) -> str:
+def _normalize_service_key(raw_key: str) -> str:
     if "%" in raw_key:
         return urllib.parse.unquote(raw_key)
     return raw_key
 
 
-async def fetch_page(client: httpx.AsyncClient, key: str, page_no: int) -> dict:
+async def _fetch_page(client: httpx.AsyncClient, key: str, page_no: int) -> dict:
     params = {
         "serviceKey": key,
         "type": "json",
@@ -89,32 +80,30 @@ async def fetch_page(client: httpx.AsyncClient, key: str, page_no: int) -> dict:
     return resp.json()
 
 
-async def fetch_all_items() -> list[dict]:
-    key = normalize_service_key(SERVICE_KEY)
+async def _fetch_all_items() -> list[dict]:
+    key = _normalize_service_key(settings.mfds_pill_service_key)
 
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        # 1페이지 조회 → 전체 건수 확인
-        data = await fetch_page(client, key, 1)
+        data = await _fetch_page(client, key, 1)
         body = data.get("body", {})
         total = body.get("totalCount", 0)
         items = body.get("items", [])
 
         if not items:
-            print("API 응답에 데이터가 없습니다.")
+            logger.warning("낱알식별 API 응답에 데이터가 없습니다.")
             return []
 
-        print(f"전체 {total}건, 페이지당 {PAGE_SIZE}건")
+        logger.info("낱알식별 API: 전체 %d건, 페이지당 %d건", total, PAGE_SIZE)
 
         last_page = (total + PAGE_SIZE - 1) // PAGE_SIZE
         if last_page <= 1:
             return items
 
-        # 나머지 페이지 동시 조회
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def fetch_with_sem(page: int) -> list[dict]:
             async with sem:
-                d = await fetch_page(client, key, page)
+                d = await _fetch_page(client, key, page)
                 return d.get("body", {}).get("items", [])
 
         tasks = [fetch_with_sem(p) for p in range(2, last_page + 1)]
@@ -122,17 +111,17 @@ async def fetch_all_items() -> list[dict]:
         for page_items in results:
             items.extend(page_items)
 
-    print(f"API에서 총 {len(items)}건 조회 완료")
+    logger.info("낱알식별 API에서 총 %d건 조회 완료", len(items))
     return items
 
 
-def save_to_mysql(items: list[dict]):
+def _save_to_mysql(items: list[dict[str, Any]]) -> int:
     conn = pymysql.connect(
-        host=MYSQL_HOST,
-        port=MYSQL_PORT,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
+        host=settings.mysql_host,
+        port=settings.mysql_port,
+        user=settings.mysql_user,
+        password=settings.mysql_password,
+        database=settings.mysql_db,
         charset="utf8mb4",
     )
 
@@ -144,12 +133,9 @@ def save_to_mysql(items: list[dict]):
             # 기존 데이터 전부 삭제 후 새로 적재
             cur.execute("TRUNCATE TABLE pill_identification")
             conn.commit()
-            print("기존 데이터 삭제 완료")
+            logger.info("기존 pill_identification 데이터 삭제 완료")
 
-            rows = []
-            for item in items:
-                row = tuple(item.get(f) for f in FIELDS)
-                rows.append(row)
+            rows = [tuple(item.get(f) for f in FIELDS) for item in items]
 
             batch_size = 500
             inserted = 0
@@ -158,20 +144,24 @@ def save_to_mysql(items: list[dict]):
                 cur.executemany(INSERT_SQL, batch)
                 conn.commit()
                 inserted += len(batch)
-                print(f"  적재 진행: {inserted}/{len(rows)}")
 
-        print(f"MySQL 적재 완료: {len(rows)}건")
+        logger.info("MySQL 적재 완료: %d건", len(rows))
+        return len(rows)
     finally:
         conn.close()
 
 
-async def main():
-    print("=== 낱알식별 API → MySQL 적재 시작 ===")
-    items = await fetch_all_items()
-    if items:
-        save_to_mysql(items)
-    print("=== 완료 ===")
+async def load_pill_data() -> int:
+    """낱알식별 API에서 전체 데이터를 가져와 MySQL에 적재한다.
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    Returns:
+        적재된 건수. 데이터가 없으면 0.
+    """
+    logger.info("=== 낱알식별 데이터 적재 시작 ===")
+    items = await _fetch_all_items()
+    if not items:
+        logger.warning("적재할 데이터가 없습니다.")
+        return 0
+    count = await asyncio.to_thread(_save_to_mysql, items)
+    logger.info("=== 낱알식별 데이터 적재 완료: %d건 ===", count)
+    return count

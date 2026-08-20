@@ -2,7 +2,7 @@
 Step 1~4 전체를 잇는 오케스트레이션.
 
 Step 1(알약 앞/뒤 촬영)은 프론트엔드/업로드 단계라 여기서 다루지 않는다. 이 모듈은
-Step 2(Vision AI로 검색 조건 추출) -> Step 3(낱알식별 API 매칭) -> Step 4(e약은요
+Step 2(Vision AI로 검색 조건 추출) -> Step 3(DB 매칭) -> Step 4(e약은요
 상세정보 조회)를 순서대로 연결한다.
 
 Step 4는 Step 3에서 SINGLE_MATCH 로 정확히 1건이 확정됐을 때만 자동으로 실행한다.
@@ -54,7 +54,7 @@ async def identify_pill(
     if vision_result is None:
         return PillIdentificationOutcome(vision_failed=True)
 
-    # Step 3: 낱알식별 API 매칭
+    # Step 3: DB 매칭
     match_result: PillMatchResult = await matching_service.match(vision_result)
 
     # Step 4: 정확히 1건으로 확정됐을 때만 자동으로 상세정보까지 조회

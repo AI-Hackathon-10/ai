@@ -1,17 +1,41 @@
 """
-실제 Vision AI / 실제 낱알식별 API 없이도 매칭 로직(레벨 완화 전략)을 검증한다.
-
-식약처 v03 요청변수에는 각인/색/모양이 없다. 매칭은 카탈로그(응답 목록)를
-가져온 뒤 PRINT_FRONT 등 응답 필드로 로컬 필터한다.
+실제 Vision AI / 실제 DB 없이도 매칭 로직(레벨 완화 전략)을 검증한다.
 """
 from __future__ import annotations
-
-from unittest.mock import AsyncMock
 
 import pytest
 
 from app.models import MatchStatus, PillApiItem, VisionExtractionResult
-from app.pill_matching_service import PillMatchingService
+from app.pill_matching_service import PillMatchingService, PRINT_CONFIDENCE_THRESHOLD
+
+_FILTER_ATTRS = {
+    "PRINT_FRONT": "print_front",
+    "PRINT_BACK": "print_back",
+    "DRUG_SHAPE": "drug_shape",
+    "COLOR_CLASS1": "color_class1",
+    "COLOR_CLASS2": "color_class2",
+}
+_PRINT_FILTERS = {"PRINT_FRONT", "PRINT_BACK"}
+
+
+def _normalize_print(value: str) -> str:
+    return "".join(value.split()).casefold()
+
+
+def _item_matches(item: PillApiItem, filters: dict[str, str]) -> bool:
+    for key, expected in filters.items():
+        attr = _FILTER_ATTRS.get(key)
+        if attr is None:
+            continue
+        actual = getattr(item, attr, None)
+        if not actual or not str(actual).strip():
+            return False
+        if key in _PRINT_FILTERS:
+            if _normalize_print(str(actual)) != _normalize_print(expected):
+                return False
+        elif str(actual).strip() != expected.strip():
+            return False
+    return True
 
 
 def item(
@@ -37,15 +61,23 @@ def item(
     )
 
 
-def service_with_catalog(*items: PillApiItem) -> PillMatchingService:
-    client = AsyncMock()
-    client.get_catalog.return_value = list(items)
-    return PillMatchingService(client)
+class _InMemoryFinder:
+    """테스트용: 메모리 내 아이템 목록을 로컬 필터로 find() 하는 클라이언트."""
+
+    def __init__(self, items: list[PillApiItem]):
+        self.items = items
+
+    async def find(self, filters: dict[str, str], limit: int = 11) -> list[PillApiItem]:
+        return [i for i in self.items if _item_matches(i, filters)][:limit]
+
+
+def service_with_items(*items: PillApiItem) -> PillMatchingService:
+    return PillMatchingService(_InMemoryFinder(list(items)))
 
 
 @pytest.mark.asyncio
 async def test_앞뒤_각인_모두_신뢰도_높고_1건이면_STRICT_WITH_PRINT_BOTH_레벨에서_SINGLE_MATCH():
-    matching = service_with_catalog(
+    matching = service_with_items(
         item(
             "199900001",
             "타이레놀정500mg",
@@ -76,7 +108,7 @@ async def test_앞뒤_각인_모두_신뢰도_높고_1건이면_STRICT_WITH_PRIN
 
 @pytest.mark.asyncio
 async def test_앞면만_신뢰도_높으면_앞면_각인만으로_STRICT_WITH_PRINT_FRONT_ONLY_시도():
-    matching = service_with_catalog(
+    matching = service_with_items(
         item("1", "약A", print_front="TY", print_back="XXX", drug_shape="장방형", color_class1="하양"),
     )
     vision = VisionExtractionResult(
@@ -98,7 +130,7 @@ async def test_앞면만_신뢰도_높으면_앞면_각인만으로_STRICT_WITH_
 
 @pytest.mark.asyncio
 async def test_둘다_신뢰도_높아도_BOTH가_0건이면_FRONT_ONLY로_구제된다():
-    matching = service_with_catalog(
+    matching = service_with_items(
         item(
             "199900001",
             "타이레놀정500mg",
@@ -127,7 +159,7 @@ async def test_둘다_신뢰도_높아도_BOTH가_0건이면_FRONT_ONLY로_구�
 
 @pytest.mark.asyncio
 async def test_앞뒤_모두_각인_신뢰도가_낮으면_각인_없이_바로_SHAPE_AND_COLOR_레벨로_건너뛴다():
-    matching = service_with_catalog(
+    matching = service_with_items(
         item("1", "약A", print_front="AA", drug_shape="원형", color_class1="노랑"),
         item("2", "약B", print_front="BB", drug_shape="원형", color_class1="노랑"),
     )
@@ -151,7 +183,7 @@ async def test_앞뒤_모두_각인_신뢰도가_낮으면_각인_없이_바로_
 
 @pytest.mark.asyncio
 async def test_모든_레벨에서_0건이면_NO_MATCH():
-    matching = service_with_catalog(
+    matching = service_with_items(
         item("1", "약A", print_front="AA", drug_shape="원형", color_class1="하양"),
     )
     vision = VisionExtractionResult(
@@ -169,7 +201,7 @@ async def test_모든_레벨에서_0건이면_NO_MATCH():
 
 @pytest.mark.asyncio
 async def test_마지막_레벨_COLOR_ONLY_에서도_후보가_너무_많으면_TOO_MANY_CANDIDATES():
-    matching = service_with_catalog(
+    matching = service_with_items(
         *[item(str(i), f"약{i}", color_class1="하양") for i in range(37)]
     )
     vision = VisionExtractionResult(
@@ -183,24 +215,21 @@ async def test_마지막_레벨_COLOR_ONLY_에서도_후보가_너무_많으면_
     assert result.status == MatchStatus.TOO_MANY_CANDIDATES
 
 
-class _FinderClient:
+class _SpyFinder:
+    """find() 호출 기록을 남기는 테스트용 클라이언트."""
+
     def __init__(self, items: list[PillApiItem]):
         self.items = items
         self.calls: list[dict[str, str]] = []
-        self.get_catalog_called = False
 
     async def find(self, filters: dict[str, str], limit: int = 11) -> list[PillApiItem]:
         self.calls.append(dict(filters))
-        return list(self.items)
-
-    async def get_catalog(self) -> list[PillApiItem]:
-        self.get_catalog_called = True
-        return list(self.items)
+        return [i for i in self.items if _item_matches(i, filters)][:limit]
 
 
 @pytest.mark.asyncio
-async def test_find가_있으면_카탈로그_전체가_아니라_필터_조회를_쓴다():
-    client = _FinderClient(
+async def test_find에_올바른_필터가_전달된다():
+    client = _SpyFinder(
         [item("200808877", "페라트라정", print_front="YH", drug_shape="원형", color_class1="노랑")]
     )
     matching = PillMatchingService(client)
@@ -215,7 +244,6 @@ async def test_find가_있으면_카탈로그_전체가_아니라_필터_조회�
     result = await matching.match(vision)
 
     assert result.status == MatchStatus.SINGLE_MATCH
-    assert client.get_catalog_called is False
     assert client.calls
     assert client.calls[0]["PRINT_FRONT"] == "YH"
     assert client.calls[0]["DRUG_SHAPE"] == "원형"
