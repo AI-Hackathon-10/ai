@@ -17,6 +17,7 @@ from typing import Optional
 
 from google import genai
 from google.genai import types
+from langsmith import traceable
 
 from app.vision.schema import PILL_VISION_RESPONSE_SCHEMA, SYSTEM_PROMPT, build_user_prompt
 
@@ -27,6 +28,18 @@ class GeminiVisionError(Exception):
     """Gemini 호출/응답 파싱 관련 오류."""
 
 
+def _redact_image_bytes(inputs: dict) -> dict:
+    """LangSmith 트레이스에 이미지 원본 바이트(base64로 부풀려짐)가 그대로 올라가지
+    않도록 크기 정보만 남기고 지운다."""
+    redacted = dict(inputs)
+    for key in ("front_image_bytes", "back_image_bytes"):
+        value = redacted.get(key)
+        if isinstance(value, (bytes, bytearray)):
+            redacted[key] = f"<{len(value)} bytes>"
+    return redacted
+
+
+@traceable(run_type="llm", name="gemini_vision_call", process_inputs=_redact_image_bytes)
 async def call_gemini_vision(
     front_image_bytes: bytes,
     back_image_bytes: Optional[bytes],

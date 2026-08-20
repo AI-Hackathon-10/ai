@@ -35,7 +35,8 @@ async def run_vision_extraction(
             "front_image_mime_type": front_mime_type,
             "back_image_mime_type": back_mime_type,
             "attempt": 0,
-        }
+        },
+        config={"run_name": "vision_extraction_graph"},
     )
     if final_state.get("failed"):
         return None
