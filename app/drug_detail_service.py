@@ -24,3 +24,13 @@ class DrugDetailService:
             return None
         # itemSeq로 단건 조회했으므로 정상적인 경우 1건만 나온다.
         return response.body.items[0]
+
+    async def get_detail_by_name(self, item_name: str) -> Optional[DrugDetailApiItem]:
+        """증상 기반 추천에서 LLM이 제안한 제품명 후보를 공식 DB로 검증한다.
+
+        0건이면 '실존 확인 실패'로 보고 None을 반환한다.
+        """
+        response = await self._api_client.get_by_item_name(item_name)
+        if response.total_count == 0 or not response.body or not response.body.items:
+            return None
+        return response.body.items[0]

@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .cache/
 .venv
+# CLOVA Speech gRPC 생성 파일 (nest.proto로부터 자동 생성 — 커밋 불필요)
+scripts/manual_test/nest_pb2.py
+scripts/manual_test/nest_pb2_grpc.py
+scripts/manual_test/__pycache__/

@@ -43,12 +43,18 @@ class DrugDetailApiClient:
         self._owns_client = http_client is None
 
     async def get_by_item_seq(self, item_seq: str) -> DrugDetailApiResponse:
+        return await self._fetch({"itemSeq": item_seq})
+
+    async def get_by_item_name(self, item_name: str) -> DrugDetailApiResponse:
+        return await self._fetch({"itemName": item_name})
+
+    async def _fetch(self, extra_params: dict) -> DrugDetailApiResponse:
         query = {
             "serviceKey": self._service_key,
             "type": "json",
             "pageNo": 1,
             "numOfRows": NUM_OF_ROWS,
-            "itemSeq": item_seq,
+            **extra_params,
         }
 
         try:

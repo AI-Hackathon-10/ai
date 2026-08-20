@@ -133,7 +133,7 @@ async def build_identify_result(
     candidate = _confirmed_candidate(outcome)
     ok = candidate is not None
     identification = _identification(ok, outcome.match_result)
-    official = _official(detail) if detail else None
+    official = official_from_detail(detail) if detail else None
     recommendation = await _recommendation(
         ok,
         identification,
@@ -233,7 +233,8 @@ def _features(
     )
 
 
-def _official(detail: DrugDetailApiItem) -> Official:
+def official_from_detail(detail: DrugDetailApiItem) -> Official:
+    """e약은요 상세정보 -> 응답용 Official. 증상 기반 추천에서도 재사용한다."""
     return Official(
         item_seq=detail.item_seq,
         item_name=detail.item_name,
