@@ -1,12 +1,15 @@
 """사용자 나이·성별·증상으로 복용 가능 여부와 주의사항을 개인화한다."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from app.drug_detail_models import DrugDetailApiItem
+
+logger = logging.getLogger(__name__)
 
 SYMPTOM_TYPE_MAP: dict[str, str] = {
     "HEADACHE": "두통",
@@ -51,7 +54,7 @@ class RecommendationDraft:
     caution: Optional[str]
 
 
-def build_recommendation(
+async def build_recommendation(
     *,
     identification,
     detail: DrugDetailApiItem,
@@ -65,10 +68,26 @@ def build_recommendation(
     age = _age_years(birth_date, today) if birth_date else None
     gender_key = (gender or "").upper() or None
     display_symptoms = [_display_symptom(s) for s in symptoms if s]
+    duration_days = _symptom_days(symptom_started_at, today)
+
+    # LLM 호출 시도
+    try:
+        from app.recommendation_llm import generate_recommendation_via_llm
+
+        return await generate_recommendation_via_llm(
+            detail=detail,
+            symptoms=display_symptoms,
+            age=age,
+            gender_key=gender_key,
+            duration_days=duration_days,
+        )
+    except Exception:
+        logger.warning("LLM 추천 생성 실패, 규칙 기반 폴백", exc_info=True)
+
+    # 기존 규칙 기반 로직 (폴백)
     matched = [s for s in display_symptoms if s and detail.efficacy and s in detail.efficacy]
     min_age = _min_age(detail.precautions, detail.usage_method, detail.warning)
     age_blocked = age is not None and min_age is not None and age < min_age
-    duration_days = _symptom_days(symptom_started_at, today)
     long_duration = duration_days is not None and duration_days >= _DURATION_CAUTION_DAYS
     pregnancy_relevant = gender_key == "FEMALE" and (age is None or age >= 12)
     elderly_relevant = age is not None and age >= _ELDERLY_AGE

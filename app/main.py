@@ -352,7 +352,7 @@ async def identify_db_batch(body: BatchIdentifyDbRequest):
 
     details = await asyncio.gather(*[_detail_for(outcome) for outcome in outcomes])
 
-    result = [
+    result = await asyncio.gather(*[
         build_identify_result(
             id=body.items[i].id,
             outcome=outcomes[i],
@@ -363,8 +363,8 @@ async def identify_db_batch(body: BatchIdentifyDbRequest):
             symptom_started_at=body.symptom_started_at,
         )
         for i in range(len(outcomes))
-    ]
-    return BatchIdentifyDbResponse(result=result)
+    ])
+    return BatchIdentifyDbResponse(result=list(result))
 
 
 @app.post("/identify/select/{item_seq}", response_model=SelectCandidateResponse)

@@ -15,7 +15,7 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from app.models import VisionExtractionResult
-from app.vision.types import GeminiVisionCallFn, VisionGraphState
+from app.vision.types import VisionCallFn, VisionGraphState
 
 
 def _has_minimum_usable_data(raw: dict) -> bool:
@@ -24,10 +24,10 @@ def _has_minimum_usable_data(raw: dict) -> bool:
     return bool(raw.get("color_class1")) or bool(raw.get("drug_shape"))
 
 
-def build_vision_graph(vision_call: GeminiVisionCallFn):
+def build_vision_graph(vision_call: VisionCallFn):
     """vision_call 을 주입받는 형태로 그래프를 빌드한다.
-    운영 코드는 app.vision.run 에서 app.vision.gemini_client.call_gemini_vision 을
-    넘겨 만들고, 테스트는 가짜 함수를 넘겨 그래프 로직만 검증한다."""
+    운영 코드는 app.vision.run 에서 app.vision.factory.get_vision_call() 이 반환한
+    함수를 넘겨 만들고, 테스트는 가짜 함수를 넘겨 그래프 로직만 검증한다."""
 
     async def extract_node(state: VisionGraphState) -> dict:
         raw = await vision_call(

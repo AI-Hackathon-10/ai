@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.drug_detail_models import DrugDetailApiItem
 from app.identify_result import Identification
@@ -27,16 +30,27 @@ _TYLENOL_DETAIL = DrugDetailApiItem(
 )
 
 
-def test_성인_남성_두통_발열이면_복용_가능하고_소아_임신_주의는_빼다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["HEADACHE", "FEVER"],
-        gender="MALE",
-        birth_date=date(1995, 12, 30),
-        symptom_started_at=datetime(2026, 8, 20, 14, 0, tzinfo=_KST),
-        as_of=_TODAY,
+def _mock_llm_fail():
+    """LLM 호출을 실패시켜 규칙 기반 폴백 로직을 검증한다."""
+    return patch(
+        "app.recommendation_llm.generate_recommendation_via_llm",
+        new_callable=AsyncMock,
+        side_effect=Exception("test: LLM disabled"),
     )
+
+
+@pytest.mark.asyncio
+async def test_성인_남성_두통_발열이면_복용_가능하고_소아_임신_주의는_빼다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["HEADACHE", "FEVER"],
+            gender="MALE",
+            birth_date=date(1995, 12, 30),
+            symptom_started_at=datetime(2026, 8, 20, 14, 0, tzinfo=_KST),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "RECOMMENDED"
     assert rec.score == 0.94
@@ -53,15 +67,17 @@ def test_성인_남성_두통_발열이면_복용_가능하고_소아_임신_주
     assert "사람은 이 약을" in rec.caution
 
 
-def test_12세_미만이면_복용_불가이고_연령_주의를_남긴다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["HEADACHE", "FEVER"],
-        gender="MALE",
-        birth_date=date(2020, 1, 1),
-        as_of=_TODAY,
-    )
+@pytest.mark.asyncio
+async def test_12세_미만이면_복용_불가이고_연령_주의를_남긴다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["HEADACHE", "FEVER"],
+            gender="MALE",
+            birth_date=date(2020, 1, 1),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "NOT_RECOMMENDED"
     assert rec.score == 0.2
@@ -71,15 +87,17 @@ def test_12세_미만이면_복용_불가이고_연령_주의를_남긴다():
     assert "12세 미만" in rec.caution
 
 
-def test_증상과_효능이_안_맞으면_복용_불가이고_점수는_낮다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["DIARRHEA"],
-        gender="MALE",
-        birth_date=date(1995, 12, 30),
-        as_of=_TODAY,
-    )
+@pytest.mark.asyncio
+async def test_증상과_효능이_안_맞으면_복용_불가이고_점수는_낮다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["DIARRHEA"],
+            gender="MALE",
+            birth_date=date(1995, 12, 30),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "NOT_RECOMMENDED"
     assert rec.score == 0.4
@@ -88,15 +106,17 @@ def test_증상과_효능이_안_맞으면_복용_불가이고_점수는_낮다(
     assert "일치하지 않습니다" in rec.reason
 
 
-def test_가임기_여성이면_임부_수유_주의를_남긴다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["HEADACHE"],
-        gender="FEMALE",
-        birth_date=date(1995, 12, 30),
-        as_of=_TODAY,
-    )
+@pytest.mark.asyncio
+async def test_가임기_여성이면_임부_수유_주의를_남긴다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["HEADACHE"],
+            gender="FEMALE",
+            birth_date=date(1995, 12, 30),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "RECOMMENDED"
     assert rec.score == 0.9
@@ -107,15 +127,17 @@ def test_가임기_여성이면_임부_수유_주의를_남긴다():
     assert "12세 미만" not in rec.caution
 
 
-def test_고령자면_고령자_주의를_남긴다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["HEADACHE"],
-        gender="MALE",
-        birth_date=date(1950, 1, 1),
-        as_of=_TODAY,
-    )
+@pytest.mark.asyncio
+async def test_고령자면_고령자_주의를_남긴다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["HEADACHE"],
+            gender="MALE",
+            birth_date=date(1950, 1, 1),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "RECOMMENDED"
     assert rec.score == 0.9
@@ -124,16 +146,18 @@ def test_고령자면_고령자_주의를_남긴다():
     assert "고령자" in rec.caution
 
 
-def test_증상이_3일_이상이면_지속_주의를_붙인다():
-    rec = build_recommendation(
-        identification=_IDENT,
-        detail=_TYLENOL_DETAIL,
-        symptoms=["FEVER"],
-        gender="MALE",
-        birth_date=date(1995, 12, 30),
-        symptom_started_at=datetime(2026, 8, 16, 9, 0, tzinfo=_KST),
-        as_of=_TODAY,
-    )
+@pytest.mark.asyncio
+async def test_증상이_3일_이상이면_지속_주의를_붙인다():
+    with _mock_llm_fail():
+        rec = await build_recommendation(
+            identification=_IDENT,
+            detail=_TYLENOL_DETAIL,
+            symptoms=["FEVER"],
+            gender="MALE",
+            birth_date=date(1995, 12, 30),
+            symptom_started_at=datetime(2026, 8, 16, 9, 0, tzinfo=_KST),
+            as_of=_TODAY,
+        )
 
     assert rec.status == "RECOMMENDED"
     assert rec.confidence == "MEDIUM"

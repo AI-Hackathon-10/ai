@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     # 비워두면 Step 2(Vision) 관련 기능만 동작하지 않고, 나머지(Step 3/4)는 정상 동작한다.
     gemini_api_key: str = ""
 
+    # Vision 프로바이더 선택: "gemini" (기본) 또는 "openai"
+    vision_provider: str = Field(default="gemini", validation_alias=AliasChoices("VISION_PROVIDER"))
+    # 사용할 모델명. 비워두면 프로바이더별 기본값 사용
+    # Gemini: "gemini-3.5-flash", OpenAI: "gpt-4o-mini"
+    vision_model: str = Field(default="", validation_alias=AliasChoices("VISION_MODEL"))
+
+    # OpenAI API Key
+    openai_api_key: str = Field(default="", validation_alias=AliasChoices("OPENAI_API_KEY"))
+
+    # 개인화 추천에 사용할 OpenAI 모델명. 비워두면 "gpt-4o-mini" 기본값 사용
+    recommend_model: str = Field(default="", validation_alias=AliasChoices("RECOMMEND_MODEL"))
+
     # load_pill_data.py 가 적재한 pill_identification 테이블. 값은 backend/.env 의
     # DB_USERNAME/DB_PASSWORD 를 그대로 쓰고, DB 이름은 기본 pillcare 다.
     mysql_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("MYSQL_HOST"))
@@ -67,6 +79,10 @@ settings = Settings()
 # (setdefault는 이미 키가 있으면 덮어쓰지 않음).
 if settings.gemini_api_key:
     os.environ.setdefault("GEMINI_API_KEY", settings.gemini_api_key)
+
+# openai SDK도 OPENAI_API_KEY 환경변수를 직접 읽으므로 같은 방식으로 다리를 놓는다.
+if settings.openai_api_key:
+    os.environ.setdefault("OPENAI_API_KEY", settings.openai_api_key)
 
 # langsmith SDK도 마찬가지로 os.environ을 직접 읽으므로 같은 방식으로 다리를 놓는다.
 # 키가 없는데 tracing만 true인 실수를 막기 위해 둘 다 있을 때만 켠다.

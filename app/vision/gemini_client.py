@@ -19,9 +19,10 @@ from google import genai
 from google.genai import types
 from langsmith import traceable
 
+from app.config import settings
 from app.vision.schema import PILL_VISION_RESPONSE_SCHEMA, SYSTEM_PROMPT, build_user_prompt
 
-MODEL_NAME = "gemini-3.5-flash"
+_DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
 
 
 class GeminiVisionError(Exception):
@@ -67,8 +68,9 @@ async def call_gemini_vision(
     parts.append(types.Part.from_text(text=build_user_prompt()))
 
     try:
+        model_name = settings.vision_model or _DEFAULT_GEMINI_MODEL
         response = client.models.generate_content(
-            model=MODEL_NAME,
+            model=model_name,
             contents=parts,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,

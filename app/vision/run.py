@@ -7,10 +7,10 @@ from __future__ import annotations
 from typing import Optional
 
 from app.models import VisionExtractionResult
-from app.vision.gemini_client import call_gemini_vision
+from app.vision.factory import get_vision_call
 from app.vision.graph import build_vision_graph
 
-_compiled_graph = build_vision_graph(call_gemini_vision)
+_compiled_graph = build_vision_graph(get_vision_call())
 
 
 async def run_vision_extraction(
