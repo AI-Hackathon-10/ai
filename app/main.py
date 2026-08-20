@@ -20,7 +20,7 @@ from typing import Optional, Union
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from app.base64_images import decode_base64_image_or_400
 from app.config import settings
@@ -143,9 +143,17 @@ class BatchIdentifyDbRequest(BaseModel):
         default_factory=list,
         description="사용자가 선택한 증상 (SymptomType enum 값: HEADACHE, FEVER 등). 여러 개 선택 가능",
     )
+    symptom_started_at: Optional[AwareDatetime] = Field(
+        default=None,
+        alias="symptomStartedAt",
+        description="증상 발생 시각 (ISO 8601, 예: 2026-08-20T14:00:00+09:00)",
+        examples=["2026-08-20T14:00:00+09:00"],
+    )
     items: list[BatchIdentifyDbItem] = Field(
         ..., description="알약 이미지 세트 리스트", min_length=1
     )
+
+    model_config = {"populate_by_name": True}
 
 
 class BatchIdentifyDbResponse(BaseModel):
@@ -350,6 +358,9 @@ async def identify_db_batch(body: BatchIdentifyDbRequest):
             outcome=outcomes[i],
             detail=details[i],
             symptoms=body.symptoms,
+            gender=body.user.gender,
+            birth_date=body.user.birth_date,
+            symptom_started_at=body.symptom_started_at,
         )
         for i in range(len(outcomes))
     ]

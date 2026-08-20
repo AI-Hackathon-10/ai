@@ -357,6 +357,7 @@ Content-Type: application/json
         "birthDate": "1990-01-15"                    // YYYY-MM-DD
     },
     "symptoms": ["HEADACHE", "FEVER"],              // 선택. SymptomType enum 값 (여러 개 가능)
+    "symptomStartedAt": "2026-08-20T14:00:00+09:00", // 선택. 증상 발생 시각 (ISO 8601)
     "items": [
         {
             "id": "1",                                             // 필수. 클라이언트 지정 식별 ID
@@ -380,6 +381,7 @@ Content-Type: application/json
 |------|------|------|------|
 | `user` | `UserInfo` | **필수** | 요청 유저 정보 |
 | `symptoms` | `string[]` | 선택 | SymptomType enum 값 리스트 (`HEADACHE`, `FEVER` 등). 여러 개 선택 가능 |
+| `symptomStartedAt` | `string (ISO 8601)` | 선택 | 증상 발생 시각. 예: `2026-08-20T14:00:00+09:00`. 타임존 포함 |
 | `items` | `BatchIdentifyDbItem[]` | **필수** | 알약 이미지 세트 리스트 (최소 1개) |
 
 **`UserInfo` 필드:**
@@ -445,8 +447,8 @@ Content-Type: application/json
                 "status": "RECOMMENDED",
                 "score": 0.94,
                 "confidence": "HIGH",
-                "reason": "현재 입력한 증상과 해당 의약품의 효능이 일치합니다.",
-                "caution": "다른 아세트아미노펜 함유 의약품과 함께 복용하지 마십시오."
+                "reason": "30세 남성의 두통, 발열 증상은 이 약의 효능과 맞습니다. 연령 금기에도 해당하지 않아 복용을 고려할 수 있습니다.",
+                "caution": "매일 세 잔 이상 정기적 음주자가 이 약을 복용할 때는 의사와 상의하십시오. 다른 아세트아미노펜 함유 의약품과 함께 복용하지 마십시오."
             },
             "features": {
                 "frontImprint": "TYLENOL",
@@ -602,6 +604,7 @@ GET /health
 +---------------------+------------------------+---------+--------------------------------------------+
 | user                | UserInfo               | Yes     | 요청 유저 정보                               |
 | symptoms            | string[]               | No      | SymptomType enum 값 리스트 (추천 판단용)      |
+| symptomStartedAt    | string (ISO 8601)      | No      | 증상 발생 시각 (타임존 포함)                    |
 | items               | BatchIdentifyDbItem[]  | Yes     | 알약 이미지 세트 리스트 (≥1)                  |
 +---------------------+------------------------+---------+--------------------------------------------+
 ```
@@ -678,7 +681,7 @@ GET /health
 | itemName            | string | null                    | 품목명                         |
 | imageUrl            | string | null                    | 알약 이미지 URL                |
 | identification      | Identification                   | 식별 신뢰도                    |
-| recommendation      | Recommendation | null            | 증상-효능 추천                 |
+| recommendation      | Recommendation | null            | 나이·성별·증상 기반 복용 판단   |
 | features            | Features | null                  | 각인/모양/색상/분할선           |
 | official            | Official | null                  | e약은요 상세정보               |
 | document            | string | null                    | 상세 요약 텍스트               |
@@ -1183,6 +1186,7 @@ curl -X POST http://localhost:8000/identify/db/batch \
       "birthDate": "1990-01-15"
     },
     "symptoms": ["HEADACHE", "FEVER"],
+    "symptomStartedAt": "2026-08-20T14:00:00+09:00",
     "items": [
       {
         "id": "1",

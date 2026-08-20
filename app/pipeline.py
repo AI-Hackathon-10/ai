@@ -14,6 +14,7 @@ fetch_detail_for_selected_candidate() 를 별도로 호출해야 한다 — 여�
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -24,6 +25,8 @@ from app.models import MatchStatus, PillMatchResult, VisionExtractionResult
 from app.pill_matching_service import PillMatchingService
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
+
+logger = logging.getLogger(__name__)
 
 
 class PillIdentificationOutcome(BaseModel):
@@ -177,8 +180,6 @@ async def identify_from_db_batch(
             back_mime_type=item["back_mime_type"],
         )
 
-    import asyncio
-
     results = await asyncio.gather(
         *[_single(item) for item in items],
         return_exceptions=True,
@@ -187,6 +188,7 @@ async def identify_from_db_batch(
     outcomes: list[IdentifyFromDbOutcome] = []
     for r in results:
         if isinstance(r, Exception):
+            logger.error("배치 항목 식별 실패 — vision_failed 로 처리합니다", exc_info=r)
             outcomes.append(IdentifyFromDbOutcome(vision_failed=True))
         else:
             outcomes.append(r)

@@ -5,33 +5,12 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from datetime import date, datetime
+
 from app.drug_detail_models import DrugDetailApiItem
 from app.models import MatchStatus, PillCandidate, VisionExtractionResult
 from app.pipeline import IdentifyFromDbOutcome
-
-# SymptomType enum → 한글 displayName 매핑 (백엔드 SymptomType.java 와 동기화)
-SYMPTOM_TYPE_MAP: dict[str, str] = {
-    "HEADACHE": "두통",
-    "FEVER": "발열",
-    "COUGH": "기침",
-    "SORE_THROAT": "인후통",
-    "RUNNY_NOSE": "콧물",
-    "NASAL_CONGESTION": "코막힘",
-    "ABDOMINAL_PAIN": "복통",
-    "INDIGESTION": "소화불량",
-    "DIARRHEA": "설사",
-    "CONSTIPATION": "변비",
-    "HEARTBURN": "속쓰림",
-    "NAUSEA_OR_VOMITING": "구토/메스꺼움",
-    "MUSCLE_PAIN": "근육통",
-    "MENSTRUAL_CRAMPS": "생리통",
-    "TOOTHACHE": "치통",
-    "ALLERGY": "알레르기",
-    "ITCHY_SKIN": "피부 가려움",
-    "BODY_ACHES": "몸살",
-    "DIZZINESS": "어지러움",
-    "CHILLS": "오한",
-}
+from app.recommendation import SYMPTOM_TYPE_MAP, build_recommendation
 
 _SHAPE_MAP = {
     "원형": "ROUND",
@@ -143,12 +122,24 @@ def build_identify_result(
     outcome: IdentifyFromDbOutcome,
     detail: Optional[DrugDetailApiItem] = None,
     symptoms: Optional[list[str]] = None,
+    gender: Optional[str] = None,
+    birth_date: Optional[date] = None,
+    symptom_started_at: Optional[datetime] = None,
 ) -> IdentifyResultItem:
     vision = outcome.vision_result
     candidate = _confirmed_candidate(outcome)
     ok = candidate is not None
-    identification = _identification(ok, vision)
+    identification = _identification(ok)
     official = _official(detail) if detail else None
+    recommendation = _recommendation(
+        ok,
+        identification,
+        detail,
+        symptoms or [],
+        gender=gender,
+        birth_date=birth_date,
+        symptom_started_at=symptom_started_at,
+    )
 
     return IdentifyResultItem(
         id=id,
@@ -157,10 +148,10 @@ def build_identify_result(
         item_name=candidate.item_name if candidate else None,
         image_url=_image_url(candidate, detail),
         identification=identification,
-        recommendation=_recommendation(ok, identification, detail, symptoms or []),
+        recommendation=recommendation,
         features=_features(vision, candidate),
         official=official,
-        document=_document(candidate, official) if ok else None,
+        document=_document(candidate, official, recommendation) if ok else None,
     )
 
 
@@ -173,19 +164,10 @@ def _confirmed_candidate(outcome: IdentifyFromDbOutcome) -> Optional[PillCandida
     return match.candidates[0]
 
 
-def _identification(ok: bool, vision: Optional[VisionExtractionResult]) -> Identification:
+def _identification(ok: bool) -> Identification:
     if not ok:
         return Identification(confidence="LOW", score=0.0)
-    score = vision.overall_confidence if vision and vision.overall_confidence is not None else 1.0
-    return Identification(confidence=_confidence_label(score), score=score)
-
-
-def _confidence_label(score: float) -> str:
-    if score >= 0.8:
-        return "HIGH"
-    if score >= 0.5:
-        return "MEDIUM"
-    return "LOW"
+    return Identification(confidence="HIGH", score=1.0)
 
 
 def _image_url(candidate: Optional[PillCandidate], detail: Optional[DrugDetailApiItem]) -> Optional[str]:
@@ -237,36 +219,61 @@ def _recommendation(
     identification: Identification,
     detail: Optional[DrugDetailApiItem],
     symptoms: list[str],
+    *,
+    gender: Optional[str] = None,
+    birth_date: Optional[date] = None,
+    symptom_started_at: Optional[datetime] = None,
 ) -> Optional[Recommendation]:
     if not ok or not symptoms or detail is None or not detail.efficacy:
         return None
-    # enum 값(HEADACHE)이면 한글로 변환, 이미 한글이면 그대로 사용
-    display_symptoms = [SYMPTOM_TYPE_MAP.get(s, s) for s in symptoms]
-    matched = any(symptom and symptom in detail.efficacy for symptom in display_symptoms)
-    if not matched:
+    if not gender and birth_date is None and symptom_started_at is None:
+        display_symptoms = [SYMPTOM_TYPE_MAP.get(s, s) for s in symptoms]
+        matched = any(symptom and symptom in detail.efficacy for symptom in display_symptoms)
+        if not matched:
+            return Recommendation(
+                status="NOT_RECOMMENDED",
+                score=round(identification.score * 0.4, 2),
+                confidence="LOW",
+                reason="현재 입력한 증상과 해당 의약품의 효능이 일치하지 않습니다.",
+                caution=detail.precautions,
+            )
         return Recommendation(
-            status="NOT_RECOMMENDED",
-            score=round(identification.score * 0.5, 2),
+            status="RECOMMENDED",
+            score=round(identification.score * 0.94, 2),
             confidence=identification.confidence,
-            reason="현재 입력한 증상과 해당 의약품의 효능이 일치하지 않습니다.",
+            reason="현재 입력한 증상과 해당 의약품의 효능이 일치합니다.",
             caution=detail.precautions,
         )
+    draft = build_recommendation(
+        identification=identification,
+        detail=detail,
+        symptoms=symptoms,
+        gender=gender,
+        birth_date=birth_date,
+        symptom_started_at=symptom_started_at,
+    )
     return Recommendation(
-        status="RECOMMENDED",
-        score=round(identification.score * 0.94, 2),
-        confidence=identification.confidence,
-        reason="현재 입력한 증상과 해당 의약품의 효능이 일치합니다.",
-        caution=detail.precautions,
+        status=draft.status,
+        score=draft.score,
+        confidence=draft.confidence,
+        reason=draft.reason,
+        caution=draft.caution,
     )
 
 
-def _document(candidate: Optional[PillCandidate], official: Optional[Official]) -> Optional[str]:
+def _document(
+    candidate: Optional[PillCandidate],
+    official: Optional[Official],
+    recommendation: Optional[Recommendation] = None,
+) -> Optional[str]:
     name = (official.item_name if official and official.item_name else None) or (
         candidate.item_name if candidate else None
     )
     parts: list[str] = []
     if name:
         parts.append(name)
+    if recommendation and recommendation.reason:
+        parts.append(f"개인판단: {recommendation.reason}")
     if official:
         for label, value in (
             ("효능", official.efficacy),
@@ -283,12 +290,11 @@ def _document(candidate: Optional[PillCandidate], official: Optional[Official]) 
 
 
 def _has_score_line(vision: Optional[VisionExtractionResult], candidate: Optional[PillCandidate]) -> bool:
-    values = []
-    if vision:
-        values.extend([vision.line_front, vision.line_back])
-    if candidate:
-        values.extend([candidate.line_front, candidate.line_back])
-    return any(_is_present_line(value) for value in values)
+    if vision is not None and vision.score_line is not None:
+        return vision.score_line
+    if candidate is None:
+        return False
+    return any(_is_present_line(value) for value in (candidate.line_front, candidate.line_back))
 
 
 def _is_present_line(value: Optional[str]) -> bool:

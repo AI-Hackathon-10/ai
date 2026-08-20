@@ -7,13 +7,14 @@ body로 받는다(app/base64_images.py 의 decode_base64_image_or_400 경유). V
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main_mod
 from app.models import MatchStatus, PillCandidate, PillMatchResult, VisionExtractionResult
-from app.pipeline import IdentifyFromDbOutcome, IndexedPillOutcome, PillBatchOutcome, PillIdentificationOutcome
+from app.pipeline import IdentifyFromDbOutcome, PillIdentificationOutcome
 from app.vision.gemini_client import GeminiVisionError
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-bytes"
@@ -87,49 +88,51 @@ def test_vision_failed면_그대로_응답에_반영된다(client, monkeypatch):
     assert body["match_result"] is None
 
 
-def test_identify_batch는_알약마다_번호와_total을_붙여_반환한다(client, monkeypatch):
-    async def fake_identify_pills_batch(pills, matching_service, detail_service):
-        assert len(pills) == 2
-        return PillBatchOutcome(
-            total=2,
-            results=[
-                IndexedPillOutcome(
-                    pill_index=1,
-                    vision_failed=False,
-                    match_result=PillMatchResult(
-                        status=MatchStatus.SINGLE_MATCH,
-                        candidates=[PillCandidate(item_seq="1", item_name="약A")],
-                        query_level_used="DIRECT_MATCH",
-                    ),
-                ),
-                IndexedPillOutcome(pill_index=2, vision_failed=True),
-            ],
-        )
+_BATCH_USER = {
+    "userId": 1,
+    "name": "홍길동",
+    "gender": "MALE",
+    "birthDate": "1990-01-15",
+}
 
-    monkeypatch.setattr(main_mod, "identify_pills_batch", fake_identify_pills_batch)
 
+def test_identify_db_batch는_items가_비어있으면_422를_반환한다(client):
     response = client.post(
-        "/identify/batch",
+        "/identify/db/batch",
         json={
-            "pills": [
-                {"front_image": f"data:image/png;base64,{_PNG_B64}"},
-                {"front_image": f"data:image/png;base64,{_PNG_B64}"},
-            ]
+            "user": _BATCH_USER,
+            "symptoms": ["HEADACHE"],
+            "items": [],
         },
     )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] == 2
-    assert [r["pill_index"] for r in body["results"]] == [1, 2]
-    assert body["results"][0]["vision_failed"] is False
-    assert body["results"][0]["match_result"]["status"] == "SINGLE_MATCH"
-    assert body["results"][1]["vision_failed"] is True
-    assert body["results"][1]["match_result"] is None
+    assert response.status_code == 422
 
 
-def test_identify_batch는_pills가_비어있으면_422를_반환한다(client):
-    response = client.post("/identify/batch", json={"pills": []})
+def test_batch_request는_symptomStartedAt_ISO8601을_파싱한다():
+    body = main_mod.BatchIdentifyDbRequest.model_validate(
+        {
+            "user": _BATCH_USER,
+            "symptoms": ["HEADACHE", "FEVER"],
+            "symptomStartedAt": "2026-08-20T14:00:00+09:00",
+            "items": [{"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"}],
+        }
+    )
+
+    assert body.symptom_started_at == datetime(
+        2026, 8, 20, 14, 0, 0, tzinfo=timezone(timedelta(hours=9))
+    )
+
+
+def test_identify_db_batch는_잘못된_symptomStartedAt이면_422를_반환한다(client):
+    response = client.post(
+        "/identify/db/batch",
+        json={
+            "user": _BATCH_USER,
+            "symptoms": ["HEADACHE"],
+            "symptomStartedAt": "어제 오후",
+            "items": [{"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"}],
+        },
+    )
     assert response.status_code == 422
 
 
@@ -277,13 +280,10 @@ def test_vision_extract는_swagger_placeholder_뒷면값은_무시한다(client,
 def test_identify_db_batch는_result를_리스트로_반환한다(client, monkeypatch):
     vision = VisionExtractionResult(
         print_front="TYLENOL",
-        print_front_confidence=0.95,
         print_back="500",
-        print_back_confidence=0.9,
         color_class1="하양",
         drug_shape="장방형",
-        line_front="+",
-        overall_confidence=1.0,
+        score_line=False,
     )
     match = PillMatchResult(
         status=MatchStatus.SINGLE_MATCH,
@@ -298,7 +298,7 @@ def test_identify_db_batch는_result를_리스트로_반환한다(client, monkey
                 color_class1="하양",
             )
         ],
-        query_level_used="STRICT_WITH_PRINT_BOTH",
+        query_level_used="DIRECT_MATCH",
     )
 
     async def fake_identify_from_db_batch(items, matching_service):
@@ -334,6 +334,7 @@ def test_identify_db_batch는_result를_리스트로_반환한다(client, monkey
                 "birthDate": "1990-01-15",
             },
             "symptoms": ["HEADACHE"],
+            "symptomStartedAt": "2026-08-20T14:00:00+09:00",
             "items": [
                 {"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"},
                 {"id": "2", "front_image": f"data:image/png;base64,{_PNG_B64}"},

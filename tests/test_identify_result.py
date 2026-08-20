@@ -12,13 +12,10 @@ def _tylenol_outcome() -> IdentifyFromDbOutcome:
         vision_failed=False,
         vision_result=VisionExtractionResult(
             print_front="TYLENOL",
-            print_front_confidence=0.95,
             print_back="500",
-            print_back_confidence=0.9,
             color_class1="하양",
             drug_shape="장방형",
-            line_front="+",
-            overall_confidence=1.0,
+            score_line=True,
         ),
         match_result=PillMatchResult(
             status=MatchStatus.SINGLE_MATCH,
@@ -33,7 +30,7 @@ def _tylenol_outcome() -> IdentifyFromDbOutcome:
                     color_class1="하양",
                 )
             ],
-            query_level_used="STRICT_WITH_PRINT_BOTH",
+            query_level_used="DIRECT_MATCH",
         ),
     )
 
@@ -124,7 +121,7 @@ def test_증상이_효능과_안_맞으면_NOT_RECOMMENDED다():
 def test_복수_후보면_확정하지_않고_ok_False다():
     outcome = IdentifyFromDbOutcome(
         vision_failed=False,
-        vision_result=VisionExtractionResult(color_class1="하양", drug_shape="원형", overall_confidence=0.7),
+        vision_result=VisionExtractionResult(color_class1="하양", drug_shape="원형"),
         match_result=PillMatchResult(
             status=MatchStatus.MULTIPLE_MATCHES,
             candidates=[
