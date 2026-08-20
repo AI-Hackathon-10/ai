@@ -257,30 +257,30 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/identify", response_model=IdentifyResponse)
-async def identify(body: IdentifyRequest):
-    """Step 1(촬영)에서 넘어온 사진(base64 JSON body)으로 Step 2 -> 3 -> (조건부) 4 를
-    한 번에 실행한다. pill_identification DB 테이블로 매칭한다.
+# @app.post("/identify", response_model=IdentifyResponse)
+# async def identify(body: IdentifyRequest):
+#     """Step 1(촬영)에서 넘어온 사진(base64 JSON body)으로 Step 2 -> 3 -> (조건부) 4 를
+#     한 번에 실행한다. pill_identification DB 테이블로 매칭한다.
 
-    front_image는 필수이며 빈 문자열이면 400을 반환한다. base64 디코딩에 실패해도
-    500이 아니라 400으로 응답한다(app/base64_images.py 의 decode_base64_image_or_400).
-    """
-    front_bytes, front_mime_type, back_bytes, back_mime_type = _decode_request_images(body)
+#     front_image는 필수이며 빈 문자열이면 400을 반환한다. base64 디코딩에 실패해도
+#     500이 아니라 400으로 응답한다(app/base64_images.py 의 decode_base64_image_or_400).
+#     """
+#     front_bytes, front_mime_type, back_bytes, back_mime_type = _decode_request_images(body)
 
-    outcome = await identify_pill(
-        front_bytes,
-        back_bytes,
-        _matching_service,
-        _detail_service,
-        front_mime_type=front_mime_type,
-        back_mime_type=back_mime_type,
-    )
+#     outcome = await identify_pill(
+#         front_bytes,
+#         back_bytes,
+#         _matching_service,
+#         _detail_service,
+#         front_mime_type=front_mime_type,
+#         back_mime_type=back_mime_type,
+#     )
 
-    return IdentifyResponse(
-        vision_failed=outcome.vision_failed,
-        match_result=outcome.match_result,
-        detail=outcome.detail,
-    )
+#     return IdentifyResponse(
+#         vision_failed=outcome.vision_failed,
+#         match_result=outcome.match_result,
+#         detail=outcome.detail,
+#     )
 
 
 @app.post("/vision/extract", response_model=VisionExtractResponse)
@@ -323,7 +323,7 @@ async def identify_db(body: IdentifyRequest):
     )
 
 
-@app.post("/identify/db/batch", response_model=BatchIdentifyDbResponse)
+@app.post("/identify", response_model=BatchIdentifyDbResponse)
 async def identify_db_batch(body: BatchIdentifyDbRequest):
     """여러 알약 이미지를 한 번에 Vision 추출 + DB 매칭하고, 확정된 항목은
     상세정보까지 조회한다. 응답은 요청 순서의 `result` 리스트다.

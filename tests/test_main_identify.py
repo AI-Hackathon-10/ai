@@ -26,66 +26,91 @@ def client():
     return TestClient(main_mod.app)
 
 
+def _batch_body(items, **kwargs):
+    """배치 요청 공통 래퍼. user 는 기본값을 쓰고 items 만 교체한다."""
+    return {
+        "user": _BATCH_USER,
+        "symptoms": kwargs.get("symptoms", []),
+        "items": items,
+    }
+
+
 def test_data_uri로_보내면_mime_type을_자동으로_인식해서_전달한다(client, monkeypatch):
-    async def fake_identify_pill(front_bytes, back_bytes, matching_service, detail_service, **kwargs):
-        assert front_bytes == _PNG_BYTES
-        assert kwargs["front_mime_type"] == "image/png"
-        assert back_bytes is None
-        return PillIdentificationOutcome(vision_failed=False)
+    captured = {}
 
-    monkeypatch.setattr(main_mod, "identify_pill", fake_identify_pill)
+    async def fake_batch(items, matching_service):
+        captured["front_mime"] = items[0]["front_mime_type"]
+        return [IdentifyFromDbOutcome(vision_failed=False, vision_result=VisionExtractionResult(color_class1="하양", drug_shape="원형"))]
 
-    response = client.post("/identify", json={"front_image": f"data:image/png;base64,{_PNG_B64}"})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["vision_failed"] is False
-
-
-def test_순수_base64와_mime_type을_같이_보내면_그대로_전달된다(client, monkeypatch):
-    async def fake_identify_pill(front_bytes, back_bytes, matching_service, detail_service, **kwargs):
-        assert kwargs["front_mime_type"] == "image/png"
-        assert kwargs["back_mime_type"] == "image/png"
-        return PillIdentificationOutcome(vision_failed=False)
-
-    monkeypatch.setattr(main_mod, "identify_pill", fake_identify_pill)
+    monkeypatch.setattr(main_mod, "identify_from_db_batch", fake_batch)
 
     response = client.post(
         "/identify",
-        json={
+        json=_batch_body([{"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"}]),
+    )
+
+    assert response.status_code == 200
+    assert captured["front_mime"] == "image/png"
+
+
+def test_순수_base64와_mime_type을_같이_보내면_그대로_전달된다(client, monkeypatch):
+    captured = {}
+
+    async def fake_batch(items, matching_service):
+        captured["front_mime"] = items[0]["front_mime_type"]
+        captured["back_mime"] = items[0]["back_mime_type"]
+        return [IdentifyFromDbOutcome(vision_failed=False, vision_result=VisionExtractionResult(color_class1="하양", drug_shape="원형"))]
+
+    monkeypatch.setattr(main_mod, "identify_from_db_batch", fake_batch)
+
+    response = client.post(
+        "/identify",
+        json=_batch_body([{
+            "id": "1",
             "front_image": _PNG_B64,
             "front_mime_type": "image/png",
             "back_image": _PNG_B64,
             "back_mime_type": "image/png",
-        },
+        }]),
     )
 
     assert response.status_code == 200
+    assert captured["front_mime"] == "image/png"
+    assert captured["back_mime"] == "image/png"
 
 
 def test_front_image가_빈문자열이면_400을_반환한다(client):
-    response = client.post("/identify", json={"front_image": ""})
+    response = client.post(
+        "/identify",
+        json=_batch_body([{"id": "1", "front_image": ""}]),
+    )
     assert response.status_code == 400
 
 
 def test_front_image가_잘못된_base64면_400을_반환한다(client):
-    response = client.post("/identify", json={"front_image": "이건-base64가-아님!!!"})
+    response = client.post(
+        "/identify",
+        json=_batch_body([{"id": "1", "front_image": "이건-base64가-아님!!!"}]),
+    )
     assert response.status_code == 400
     assert "front_image" in response.json()["detail"]
 
 
 def test_vision_failed면_그대로_응답에_반영된다(client, monkeypatch):
-    async def fake_identify_pill(*args, **kwargs):
-        return PillIdentificationOutcome(vision_failed=True)
+    async def fake_batch(items, matching_service):
+        return [IdentifyFromDbOutcome(vision_failed=True)]
 
-    monkeypatch.setattr(main_mod, "identify_pill", fake_identify_pill)
+    monkeypatch.setattr(main_mod, "identify_from_db_batch", fake_batch)
 
-    response = client.post("/identify", json={"front_image": f"data:image/png;base64,{_PNG_B64}"})
+    response = client.post(
+        "/identify",
+        json=_batch_body([{"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"}]),
+    )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["vision_failed"] is True
-    assert body["match_result"] is None
+    result = body["result"][0]
+    assert result["ok"] is False
 
 
 _BATCH_USER = {
@@ -98,7 +123,7 @@ _BATCH_USER = {
 
 def test_identify_db_batch는_items가_비어있으면_422를_반환한다(client):
     response = client.post(
-        "/identify/db/batch",
+        "/identify",
         json={
             "user": _BATCH_USER,
             "symptoms": ["HEADACHE"],
@@ -125,7 +150,7 @@ def test_batch_request는_symptomStartedAt_ISO8601을_파싱한다():
 
 def test_identify_db_batch는_잘못된_symptomStartedAt이면_422를_반환한다(client):
     response = client.post(
-        "/identify/db/batch",
+        "/identify",
         json={
             "user": _BATCH_USER,
             "symptoms": ["HEADACHE"],
@@ -325,7 +350,7 @@ def test_identify_db_batch는_result를_리스트로_반환한다(client, monkey
     monkeypatch.setattr(main_mod._detail_service, "get_detail", fake_get_detail)
 
     response = client.post(
-        "/identify/db/batch",
+        "/identify",
         json={
             "user": {
                 "userId": 1,
