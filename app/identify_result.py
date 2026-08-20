@@ -132,7 +132,7 @@ async def build_identify_result(
     vision = outcome.vision_result
     candidate = _confirmed_candidate(outcome)
     ok = candidate is not None
-    identification = _identification(ok)
+    identification = _identification(ok, outcome.match_result)
     official = _official(detail) if detail else None
     recommendation = await _recommendation(
         ok,
@@ -180,9 +180,27 @@ def _confirmed_candidate(outcome: IdentifyFromDbOutcome) -> Optional[PillCandida
     return match.candidates[0]
 
 
-def _identification(ok: bool) -> Identification:
+def _identification(ok: bool, match_result=None) -> Identification:
     if not ok:
         return Identification(confidence="LOW", score=0.0)
+
+    # 벡터 매칭인 경우 유사도 점수를 그대로 사용
+    if (
+        match_result is not None
+        and match_result.query_level_used == "VECTOR_MATCH"
+        and match_result.candidates
+        and match_result.candidates[0].similarity_score is not None
+    ):
+        score = match_result.candidates[0].similarity_score
+        if score >= 0.9:
+            confidence = "HIGH"
+        elif score >= 0.85:
+            confidence = "MEDIUM"
+        else:
+            confidence = "LOW"
+        return Identification(confidence=confidence, score=round(score, 4))
+
+    # SQL 정확 매칭인 경우
     return Identification(confidence="HIGH", score=1.0)
 
 
