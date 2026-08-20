@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.drug_detail_models import DrugDetailApiItem
 from app.drug_detail_service import DrugDetailService
-from app.models import MatchStatus, PillMatchResult
+from app.models import MatchStatus, PillMatchResult, VisionExtractionResult
 from app.pill_matching_service import PillMatchingService
 from app.vision.run import run_vision_extraction
 
@@ -65,6 +65,36 @@ async def identify_pill(
             detail = await detail_service.get_detail(item_seq)
 
     return PillIdentificationOutcome(match_result=match_result, detail=detail)
+
+
+class IdentifyFromDbOutcome(BaseModel):
+    """Vision 추출 + pill_identification 테이블 매칭 결과."""
+
+    vision_failed: bool = False
+    vision_result: Optional[VisionExtractionResult] = None
+    match_result: Optional[PillMatchResult] = None
+
+
+async def identify_from_db(
+    front_image_bytes: bytes,
+    back_image_bytes: Optional[bytes],
+    matching_service: PillMatchingService,
+    front_mime_type: str = "image/jpeg",
+    back_mime_type: Optional[str] = None,
+) -> IdentifyFromDbOutcome:
+    """Step 2(Vision 추출) 후 pill_identification 테이블만 조회한다."""
+
+    vision_result = await run_vision_extraction(
+        front_image_bytes,
+        back_image_bytes,
+        front_mime_type=front_mime_type,
+        back_mime_type=back_mime_type,
+    )
+    if vision_result is None:
+        return IdentifyFromDbOutcome(vision_failed=True)
+
+    match_result = await matching_service.match(vision_result)
+    return IdentifyFromDbOutcome(vision_result=vision_result, match_result=match_result)
 
 
 async def fetch_detail_for_selected_candidate(

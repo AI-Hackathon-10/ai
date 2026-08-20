@@ -47,13 +47,20 @@ class PillMatchingService:
 
     async def match(self, vision: VisionExtractionResult) -> PillMatchResult:
         levels = self._build_query_levels(vision)
-        catalog = await self._api_client.get_catalog()
+        finder = getattr(self._api_client.__class__, "find", None)
+        catalog: list[PillApiItem] | None = None
+        if not callable(finder):
+            catalog = await self._api_client.get_catalog()
 
         for index, level in enumerate(levels):
             if not level.params:
                 continue
 
-            matched = [item for item in catalog if _item_matches(item, level.params)]
+            if callable(finder):
+                matched = await self._api_client.find(level.params, limit=MAX_CANDIDATES + 1)
+            else:
+                assert catalog is not None
+                matched = [item for item in catalog if _item_matches(item, level.params)]
             total = len(matched)
 
             if total == 0:

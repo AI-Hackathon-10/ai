@@ -89,13 +89,21 @@ class PillApiResponse(BaseModel):
 
 
 class PillCandidate(BaseModel):
-    """사용자에게 보여줄 최소 정보로 축약한 후보 의약품."""
+    """사용자에게 보여줄 후보 의약품. 테이블 조회 시 각인/색/모양도 함께 내려준다."""
 
     item_seq: Optional[str] = None
     item_name: Optional[str] = None
     entp_name: Optional[str] = None
     chart: Optional[str] = None
     item_image: Optional[str] = None
+    print_front: Optional[str] = None
+    print_back: Optional[str] = None
+    drug_shape: Optional[str] = None
+    color_class1: Optional[str] = None
+    color_class2: Optional[str] = None
+    line_front: Optional[str] = None
+    line_back: Optional[str] = None
+    form_code_name: Optional[str] = None
 
     @classmethod
     def from_item(cls, item: PillApiItem) -> "PillCandidate":
@@ -105,6 +113,14 @@ class PillCandidate(BaseModel):
             entp_name=item.entp_name,
             chart=item.chart,
             item_image=item.item_image,
+            print_front=item.print_front,
+            print_back=item.print_back,
+            drug_shape=item.drug_shape,
+            color_class1=item.color_class1,
+            color_class2=item.color_class2,
+            line_front=item.line_front,
+            line_back=item.line_back,
+            form_code_name=item.form_code_name,
         )
 
 

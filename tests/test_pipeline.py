@@ -11,7 +11,7 @@ import pytest
 
 from app.drug_detail_models import DrugDetailApiItem
 from app.models import MatchStatus, PillCandidate, PillMatchResult, VisionExtractionResult
-from app.pipeline import identify_pill
+from app.pipeline import identify_from_db, identify_pill
 
 
 @pytest.mark.asyncio
@@ -87,3 +87,32 @@ async def test_Vision_추출_실패하면_매칭_자체를_시도하지_않는�
     assert outcome.match_result is None
     matching_service.match.assert_not_awaited()
     detail_service.get_detail.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_identify_from_db는_vision_결과로_테이블_매칭만_한다(monkeypatch):
+    vision_result = VisionExtractionResult(
+        print_front="YH",
+        print_front_confidence=0.9,
+        color_class1="노랑",
+        drug_shape="원형",
+    )
+
+    async def fake_run_vision_extraction(front, back, **kwargs):
+        return vision_result
+
+    monkeypatch.setattr("app.pipeline.run_vision_extraction", fake_run_vision_extraction)
+
+    matching_service = AsyncMock()
+    matching_service.match.return_value = PillMatchResult(
+        status=MatchStatus.SINGLE_MATCH,
+        candidates=[PillCandidate(item_seq="200808877", item_name="페라트라정", print_front="YH")],
+        query_level_used="STRICT_WITH_PRINT_FRONT_ONLY",
+    )
+
+    outcome = await identify_from_db(b"front", b"back", matching_service)
+
+    assert outcome.vision_failed is False
+    assert outcome.vision_result is vision_result
+    assert outcome.match_result.status == MatchStatus.SINGLE_MATCH
+    matching_service.match.assert_awaited_once_with(vision_result)

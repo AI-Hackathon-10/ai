@@ -181,3 +181,41 @@ async def test_마지막_레벨_COLOR_ONLY_에서도_후보가_너무_많으면_
     result = await matching.match(vision)
 
     assert result.status == MatchStatus.TOO_MANY_CANDIDATES
+
+
+class _FinderClient:
+    def __init__(self, items: list[PillApiItem]):
+        self.items = items
+        self.calls: list[dict[str, str]] = []
+        self.get_catalog_called = False
+
+    async def find(self, filters: dict[str, str], limit: int = 11) -> list[PillApiItem]:
+        self.calls.append(dict(filters))
+        return list(self.items)
+
+    async def get_catalog(self) -> list[PillApiItem]:
+        self.get_catalog_called = True
+        return list(self.items)
+
+
+@pytest.mark.asyncio
+async def test_find가_있으면_카탈로그_전체가_아니라_필터_조회를_쓴다():
+    client = _FinderClient(
+        [item("200808877", "페라트라정", print_front="YH", drug_shape="원형", color_class1="노랑")]
+    )
+    matching = PillMatchingService(client)
+    vision = VisionExtractionResult(
+        print_front="YH",
+        print_front_confidence=0.9,
+        color_class1="노랑",
+        drug_shape="원형",
+        overall_confidence=0.88,
+    )
+
+    result = await matching.match(vision)
+
+    assert result.status == MatchStatus.SINGLE_MATCH
+    assert client.get_catalog_called is False
+    assert client.calls
+    assert client.calls[0]["PRINT_FRONT"] == "YH"
+    assert client.calls[0]["DRUG_SHAPE"] == "원형"

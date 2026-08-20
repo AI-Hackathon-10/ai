@@ -15,7 +15,8 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.base64_images import decode_base64_image_or_400
@@ -25,9 +26,13 @@ from app.drug_detail_service import DrugDetailService
 from app.drug_detail_models import DrugDetailApiItem
 from app.models import PillMatchResult, VisionExtractionResult
 from app.pill_identification_api_client import PillIdentificationApiClient
+from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
 from app.pill_matching_service import PillMatchingService
-from app.pipeline import fetch_detail_for_selected_candidate, identify_pill
+from app.pipeline import fetch_detail_for_selected_candidate, identify_from_db, identify_pill
+from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
+
+_SWAGGER_PLACEHOLDERS = {"", "string", "null"}
 
 
 class IdentifyRequest(BaseModel):
@@ -41,12 +46,18 @@ class IdentifyRequest(BaseModel):
     """
 
     front_image: str = Field(..., description="알약 앞면 이미지 (base64 또는 data URI)")
-    back_image: Optional[str] = Field(None, description="알약 뒷면 이미지 (base64 또는 data URI, 선택)")
+    back_image: Optional[str] = Field(
+        None,
+        description="알약 뒷면 이미지 (base64 또는 data URI, 선택). 없으면 생략하거나 null.",
+        examples=[None],
+    )
     front_mime_type: str = Field(
         "image/jpeg", description="front_image가 순수 base64일 때만 사용되는 mime type"
     )
     back_mime_type: Optional[str] = Field(
-        None, description="back_image가 순수 base64일 때만 사용되는 mime type"
+        None,
+        description="back_image가 순수 base64일 때만 사용되는 mime type. 없으면 생략하거나 null.",
+        examples=[None],
     )
 
 
@@ -73,6 +84,25 @@ class VisionExtractResponse(BaseModel):
     result: Optional[VisionExtractionResult] = None
 
 
+class IdentifyDbResponse(BaseModel):
+    """/vision/extract 와 같은 이미지 요청으로 Vision 추출 후, 그 값으로
+    pill_identification 테이블을 조회한 결과."""
+
+    vision_failed: bool = False
+    vision_result: Optional[VisionExtractionResult] = None
+    match_result: Optional[PillMatchResult] = None
+
+
+def _optional_body_value(raw: Optional[str]) -> Optional[str]:
+    """Swagger Try it out 기본값('string')과 빈 값을 없는 필드로 취급한다."""
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if stripped.lower() in _SWAGGER_PLACEHOLDERS:
+        return None
+    return raw
+
+
 def _decode_request_images(body: "IdentifyRequest") -> tuple[bytes, str, Optional[bytes], Optional[str]]:
     """IdentifyRequest(base64 JSON body)를 (front_bytes, front_mime_type,
     back_bytes_or_None, back_mime_type_or_None)로 디코딩한다. /identify와
@@ -84,8 +114,10 @@ def _decode_request_images(body: "IdentifyRequest") -> tuple[bytes, str, Optiona
         raise HTTPException(status_code=400, detail="front_image는 필수이며 빈 문자열일 수 없습니다.")
     front_bytes, front_mime_type = front_decoded
 
+    back_image = _optional_body_value(body.back_image)
+    back_mime = _optional_body_value(body.back_mime_type)
     back_decoded = decode_base64_image_or_400(
-        body.back_image, fallback_mime_type=body.back_mime_type or "image/jpeg", field_name="back_image"
+        back_image, fallback_mime_type=back_mime or "image/jpeg", field_name="back_image"
     )
     back_bytes, back_mime_type = back_decoded if back_decoded else (None, None)
 
@@ -99,6 +131,25 @@ _pill_api_client = PillIdentificationApiClient(
     http_client=_http_client,
 )
 _matching_service = PillMatchingService(_pill_api_client)
+
+
+def _mysql_connect():
+    import pymysql
+
+    return pymysql.connect(
+        host=settings.mysql_host,
+        port=settings.mysql_port,
+        user=settings.mysql_user,
+        password=settings.mysql_password,
+        database=settings.mysql_db,
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+    )
+
+
+_db_matching_service = PillMatchingService(
+    MysqlPillCatalogClient(PillIdentificationRepository(connect=_mysql_connect))
+)
 
 # data.go.kr은 계정 하나당 인증키 하나로 여러 API를 함께 쓰는 구조라 같은 키를 재사용한다.
 # e약은요를 별도 계정/키로 신청했다면 .env에 키를 하나 더 추가해서 갈라주면 된다.
@@ -118,6 +169,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="알약 식별 API", lifespan=lifespan)
+
+
+@app.exception_handler(GeminiVisionError)
+async def gemini_vision_error_handler(_request: Request, exc: GeminiVisionError) -> JSONResponse:
+    """Gemini 쪽 장애(수요 폭주 503 등)를 문서화되지 않은 500 대신 JSON 503으로 돌려준다."""
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.get("/health")
@@ -169,6 +226,26 @@ async def vision_extract(body: IdentifyRequest):
     if result is None:
         return VisionExtractResponse(vision_failed=True, result=None)
     return VisionExtractResponse(vision_failed=False, result=result)
+
+
+@app.post("/identify/db", response_model=IdentifyDbResponse)
+async def identify_db(body: IdentifyRequest):
+    """/vision/extract 를 실행한 뒤, 나온 각인·색·모양으로 pill_identification
+    테이블을 조회한다. 요청 형식은 /identify, /vision/extract 와 같다."""
+    front_bytes, front_mime_type, back_bytes, back_mime_type = _decode_request_images(body)
+
+    outcome = await identify_from_db(
+        front_bytes,
+        back_bytes,
+        _db_matching_service,
+        front_mime_type=front_mime_type,
+        back_mime_type=back_mime_type,
+    )
+    return IdentifyDbResponse(
+        vision_failed=outcome.vision_failed,
+        vision_result=outcome.vision_result,
+        match_result=outcome.match_result,
+    )
 
 
 @app.post("/identify/select/{item_seq}", response_model=SelectCandidateResponse)
