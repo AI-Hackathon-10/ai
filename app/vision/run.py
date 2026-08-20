@@ -21,8 +21,8 @@ async def run_vision_extraction(
 ) -> Optional[VisionExtractionResult]:
     """알약 사진(들) -> VisionExtractionResult.
 
-    재시도를 다 써도 색상/모양을 못 뽑으면 None을 반환한다. 호출부(FastAPI 라우터)는
-    이를 "재촬영 요청" 응답으로 변환해야 한다.
+    Vision은 한 번만 호출된다(재질의 없음). 그 한 번으로 색상/모양을 둘 다 못 뽑으면
+    None을 반환한다. 호출부(FastAPI 라우터)는 이를 "재촬영 요청" 응답으로 변환해야 한다.
 
     ⚠️ mime_type은 반드시 실제 업로드된 파일의 Content-Type과 일치해야 한다
     (예: PNG 업로드인데 "image/jpeg"를 고정으로 넘기면 Gemini 호출이 실패하거나
@@ -34,8 +34,8 @@ async def run_vision_extraction(
             "back_image_bytes": back_image_bytes,
             "front_image_mime_type": front_mime_type,
             "back_image_mime_type": back_mime_type,
-            "attempt": 0,
-        }
+        },
+        config={"run_name": "vision_extraction_graph"},
     )
     if final_state.get("failed"):
         return None

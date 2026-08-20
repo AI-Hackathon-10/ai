@@ -63,7 +63,6 @@ async def main() -> None:
         raw = await call_gemini_vision(
             front_bytes,
             back_bytes,
-            retry_hint=None,
             front_mime_type=front_mime_type,
             back_mime_type=back_mime_type,
         )
@@ -76,17 +75,17 @@ async def main() -> None:
     print(json.dumps(raw, ensure_ascii=False, indent=2))
 
     print("\n=== 요약 ===")
-    print(f"앞면 각인   : {raw.get('print_front')!r}  (신뢰도 {raw.get('print_front_confidence')})")
-    print(f"뒷면 각인   : {raw.get('print_back')!r}  (신뢰도 {raw.get('print_back_confidence')})")
-    print(f"색상        : {raw.get('color_class1')} / {raw.get('color_class2')}")
-    print(f"모양        : {raw.get('drug_shape')}")
-    print(f"제형        : {raw.get('form_code_name')}")
-    print(f"종합 신뢰도 : {raw.get('overall_confidence')}")
+    print(f"앞면 각인 : {raw.get('print_front')!r}")
+    print(f"뒷면 각인 : {raw.get('print_back')!r}")
+    print(f"색상      : {raw.get('color_class1')}")
+    print(f"모양      : {raw.get('drug_shape')}")
+    print(f"분할선    : {raw.get('score_line')}")
 
     print(
         "\n확인 포인트: color_class1/drug_shape 값이 app/vision/schema.py의 PILL_COLORS/"
         "PILL_SHAPES 목록에 있는 값과 정확히 일치하는지, 각인이 실제 사진과 맞는지, "
-        "확신 없을 때 null을 잘 내는지(추측해서 틀린 값을 채우지 않는지)를 눈으로 확인하세요."
+        "재질의가 없으므로 확신 없을 때 null을 잘 내는지(추측해서 틀린 값을 채우지 "
+        "않는지)를 눈으로 확인하세요."
     )
 
 

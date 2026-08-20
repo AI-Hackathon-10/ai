@@ -34,6 +34,21 @@ def test_빈_필터면_조회하지_않는다():
     assert params == []
 
 
+def test_SCORE_LINE_true면_분할선_있는_행만_거르는_조건을_만든다():
+    sql, params = build_find_query({"SCORE_LINE": "true"}, limit=11)
+
+    assert "(TRIM(IFNULL(line_front, '')) != '' OR TRIM(IFNULL(line_back, '')) != '')" in sql
+    assert "NOT" not in sql
+    assert params == [11]
+
+
+def test_SCORE_LINE_false면_NOT_조건을_만든다():
+    sql, params = build_find_query({"SCORE_LINE": "false"}, limit=11)
+
+    assert "NOT (TRIM(IFNULL(line_front, '')) != '' OR TRIM(IFNULL(line_back, '')) != '')" in sql
+    assert params == [11]
+
+
 def test_row_to_item은_테이블_컬럼을_PillApiItem으로_변환한다():
     item = row_to_item(
         {

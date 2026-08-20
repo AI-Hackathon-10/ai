@@ -17,28 +17,40 @@ from typing import Optional
 
 from google import genai
 from google.genai import types
+from langsmith import traceable
 
 from app.vision.schema import PILL_VISION_RESPONSE_SCHEMA, SYSTEM_PROMPT, build_user_prompt
 
-MODEL_NAME = "gemini-3.7-flash"
+MODEL_NAME = "gemini-3.5-flash"
 
 
 class GeminiVisionError(Exception):
     """Gemini 호출/응답 파싱 관련 오류."""
 
 
+def _redact_image_bytes(inputs: dict) -> dict:
+    """LangSmith 트레이스에 이미지 원본 바이트(base64로 부풀려짐)가 그대로 올라가지
+    않도록 크기 정보만 남기고 지운다."""
+    redacted = dict(inputs)
+    for key in ("front_image_bytes", "back_image_bytes"):
+        value = redacted.get(key)
+        if isinstance(value, (bytes, bytearray)):
+            redacted[key] = f"<{len(value)} bytes>"
+    return redacted
+
+
+@traceable(run_type="llm", name="gemini_vision_call", process_inputs=_redact_image_bytes)
 async def call_gemini_vision(
     front_image_bytes: bytes,
     back_image_bytes: Optional[bytes],
-    retry_hint: Optional[str],
     front_mime_type: str = "image/jpeg",
     back_mime_type: Optional[str] = None,
 ) -> dict:
-    """알약 앞/뒤 사진(bytes) -> Vision AI가 추출한 원시 dict.
+    """알약 앞/뒤 사진(bytes) -> Vision AI가 1차로 추출한 원시 dict.
 
     반환값은 app/vision/schema.py 의 PILL_VISION_RESPONSE_SCHEMA 형태를 따른다.
-    이 함수는 파싱까지만 책임지고, 값의 최소 유효성(색상/모양 존재 여부)은
-    graph.py 의 validate 노드가 판단한다.
+    재질의는 하지 않는다 — 이 함수는 딱 한 번 호출되고, 값의 최소 유효성(색상/모양
+    존재 여부)은 graph.py 가 판단한다.
 
     ⚠️ mime_type을 실제 업로드된 파일과 다르게(예: PNG인데 "image/jpeg") 보내면
     Gemini가 이미지를 제대로 못 읽거나 요청 자체가 실패할 수 있다. 반드시 업로드
@@ -52,7 +64,7 @@ async def call_gemini_vision(
         parts.append(
             types.Part.from_bytes(data=back_image_bytes, mime_type=back_mime_type or front_mime_type)
         )
-    parts.append(types.Part.from_text(text=build_user_prompt(retry_hint)))
+    parts.append(types.Part.from_text(text=build_user_prompt()))
 
     try:
         response = client.models.generate_content(

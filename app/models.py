@@ -17,22 +17,20 @@ from pydantic import BaseModel, ConfigDict, Field
 class VisionExtractionResult(BaseModel):
     """FastAPI에서 Gemini Vision 분석 결과로 만들어지는 값.
 
-    color_class1/2, drug_shape 는 반드시 낱알식별 API가 쓰는 고정 코드값(enum)이어야
+    color_class1, drug_shape 는 반드시 낱알식별 API가 쓰는 고정 코드값(enum)이어야
     매칭이 된다. Vision AI 프롬프트 단계에서 이 값들로만 답하도록 이미 강제해둔 상태를
     전제로 한다 (이 서비스는 값을 별도로 보정하지 않는다).
+
+    재질의(재시도) 없이 1차 추출값을 그대로 쓴다 — 판단하지 못한 필드는 confidence
+    점수 없이 바로 None으로 채워서 돌아오고, 그 None은 매칭(Step 3)에서 조건을
+    그만큼 덜 거는 걸로 반영된다.
     """
 
-    print_front: Optional[str] = None                # 앞면 각인 (못 읽었으면 None)
-    print_front_confidence: Optional[float] = None   # 0.0 ~ 1.0, 앞면 각인 인식 신뢰도
-    print_back: Optional[str] = None                 # 뒷면 각인 (못 읽었으면 None)
-    print_back_confidence: Optional[float] = None    # 0.0 ~ 1.0, 뒷면 각인 인식 신뢰도
-    color_class1: Optional[str] = None      # 주색상 (고정 코드값)
-    color_class2: Optional[str] = None      # 부색상 (없으면 None)
-    drug_shape: Optional[str] = None        # 모양 (고정 코드값)
-    line_front: Optional[str] = None
-    line_back: Optional[str] = None
-    form_code_name: Optional[str] = None    # 제형 (정제/경질캡슐/연질캡슐 등)
-    overall_confidence: Optional[float] = None
+    print_front: Optional[str] = None       # 앞면 각인 (판단 불가면 None)
+    print_back: Optional[str] = None        # 뒷면 각인 (판단 불가면 None)
+    color_class1: Optional[str] = None      # 색상 (고정 코드값, 판단 불가면 None)
+    drug_shape: Optional[str] = None        # 모양 (고정 코드값, 판단 불가면 None)
+    score_line: Optional[bool] = None       # 분할선(스코어라인) 유무, 판단 불가면 None
 
 
 class PillApiItem(BaseModel):

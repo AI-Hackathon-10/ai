@@ -13,6 +13,7 @@ fetch_detail_for_selected_candidate() 를 별도로 호출해야 한다 — 여�
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,7 @@ from app.drug_detail_models import DrugDetailApiItem
 from app.drug_detail_service import DrugDetailService
 from app.models import MatchStatus, PillMatchResult, VisionExtractionResult
 from app.pill_matching_service import PillMatchingService
+from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
 
 
@@ -65,6 +67,64 @@ async def identify_pill(
             detail = await detail_service.get_detail(item_seq)
 
     return PillIdentificationOutcome(match_result=match_result, detail=detail)
+
+
+class IndexedPillOutcome(BaseModel):
+    """배치 안에서 알약 하나의 결과. pill_index는 1부터 시작 — 프론트에서
+    "알약1", "알약2" 로 그대로 쓰면 된다."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    pill_index: int
+    vision_failed: bool = False
+    match_result: Optional[PillMatchResult] = None
+    detail: Optional[DrugDetailApiItem] = None
+
+
+class PillBatchOutcome(BaseModel):
+    total: int
+    results: list[IndexedPillOutcome]
+
+
+async def identify_pills_batch(
+    pills: list[tuple[bytes, Optional[bytes], str, Optional[str]]],
+    matching_service: PillMatchingService,
+    detail_service: DrugDetailService,
+) -> PillBatchOutcome:
+    """여러 알약(앞/뒤 이미지 세트)을 한 번에 식별한다.
+
+    pills 의 원소 하나 = 알약 하나 (front_bytes, back_bytes, front_mime_type,
+    back_mime_type). 알약마다 identify_pill() 을 동시에 실행하고, 결과에
+    1부터 시작하는 pill_index 를 붙여서 모은다.
+
+    알약 하나가 Gemini 호출 실패(GeminiVisionError)로 죽어도 나머지 알약들은
+    계속 처리한다 — 배치 하나 전체를 한 알약의 일시적 장애 때문에 버리지 않는다.
+    """
+
+    async def _run_one(index: int, pill: tuple[bytes, Optional[bytes], str, Optional[str]]) -> IndexedPillOutcome:
+        front_bytes, back_bytes, front_mime_type, back_mime_type = pill
+        try:
+            outcome = await identify_pill(
+                front_bytes,
+                back_bytes,
+                matching_service,
+                detail_service,
+                front_mime_type=front_mime_type,
+                back_mime_type=back_mime_type,
+            )
+        except GeminiVisionError:
+            return IndexedPillOutcome(pill_index=index, vision_failed=True)
+        return IndexedPillOutcome(
+            pill_index=index,
+            vision_failed=outcome.vision_failed,
+            match_result=outcome.match_result,
+            detail=outcome.detail,
+        )
+
+    results = list(
+        await asyncio.gather(*(_run_one(index, pill) for index, pill in enumerate(pills, start=1)))
+    )
+    return PillBatchOutcome(total=len(results), results=results)
 
 
 class IdentifyFromDbOutcome(BaseModel):
