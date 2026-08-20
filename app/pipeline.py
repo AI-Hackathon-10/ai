@@ -97,6 +97,42 @@ async def identify_from_db(
     return IdentifyFromDbOutcome(vision_result=vision_result, match_result=match_result)
 
 
+async def identify_from_db_batch(
+    items: list[dict],
+    matching_service: PillMatchingService,
+) -> list[IdentifyFromDbOutcome]:
+    """여러 알약 이미지 세트를 동시에 Vision 추출 + DB 매칭한다.
+
+    items 는 각각 {front_bytes, back_bytes, front_mime_type, back_mime_type}
+    키를 가진 dict 리스트다. asyncio.gather 로 병렬 실행하되, 개별 항목의
+    예외가 전체를 중단시키지 않도록 한다.
+    """
+
+    async def _single(item: dict) -> IdentifyFromDbOutcome:
+        return await identify_from_db(
+            front_image_bytes=item["front_bytes"],
+            back_image_bytes=item["back_bytes"],
+            matching_service=matching_service,
+            front_mime_type=item["front_mime_type"],
+            back_mime_type=item["back_mime_type"],
+        )
+
+    import asyncio
+
+    results = await asyncio.gather(
+        *[_single(item) for item in items],
+        return_exceptions=True,
+    )
+
+    outcomes: list[IdentifyFromDbOutcome] = []
+    for r in results:
+        if isinstance(r, Exception):
+            outcomes.append(IdentifyFromDbOutcome(vision_failed=True))
+        else:
+            outcomes.append(r)
+    return outcomes
+
+
 async def fetch_detail_for_selected_candidate(
     item_seq: str,
     detail_service: DrugDetailService,
