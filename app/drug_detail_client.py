@@ -43,12 +43,27 @@ class DrugDetailApiClient:
         self._owns_client = http_client is None
 
     async def get_by_item_seq(self, item_seq: str) -> DrugDetailApiResponse:
+        return await self._fetch({"itemSeq": item_seq})
+
+    async def get_by_item_name(self, item_name: str) -> DrugDetailApiResponse:
+        """제품명으로 검색한다. 증상 기반 추천(app/symptom)에서 LLM이 제안한
+        후보 이름이 실제로 존재하는 의약품인지, 상세정보가 있는지 확인할 때 쓴다.
+
+        ⚠️ itemName 파라미터명도 다른 파라미터들과 마찬가지로 통용되는 명칭
+        기준 추정치다. 활용가이드에서 정확한 파라미터명과 부분일치 지원 여부를
+        확인할 것 — LLM이 제안하는 이름("타이레놀")이 공식 등록명("타이레놀정
+        500mg")과 정확히 일치하지 않을 수 있으므로, 부분일치를 지원하지 않는다면
+        호출부에서 별도의 완화 검색(에: 앞부분만 잘라 재시도)이 필요할 수 있다.
+        """
+        return await self._fetch({"itemName": item_name})
+
+    async def _fetch(self, extra_query: dict) -> DrugDetailApiResponse:
         query = {
             "serviceKey": self._service_key,
             "type": "json",
             "pageNo": 1,
             "numOfRows": NUM_OF_ROWS,
-            "itemSeq": item_seq,
+            **extra_query,
         }
 
         try:

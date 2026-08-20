@@ -130,7 +130,7 @@ def build_identify_result(
     candidate = _confirmed_candidate(outcome)
     ok = candidate is not None
     identification = _identification(ok)
-    official = _official(detail) if detail else None
+    official = official_from_detail(detail) if detail else None
     recommendation = _recommendation(
         ok,
         identification,
@@ -199,7 +199,13 @@ def _features(
     )
 
 
-def _official(detail: DrugDetailApiItem) -> Official:
+def official_from_detail(detail: DrugDetailApiItem) -> Official:
+    """e약은요 상세정보(DrugDetailApiItem) -> 응답용 Official.
+
+    app.symptom.service 에서도 그대로 재사용한다(사진 스캔 플로우와 증상 기반
+    추천 플로우가 같은 '공식 데이터만 노출' 규칙을 공유해야 하므로, 공개
+    함수로 분리해뒀다).
+    """
     return Official(
         item_seq=detail.item_seq,
         item_name=detail.item_name,

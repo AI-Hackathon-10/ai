@@ -24,3 +24,17 @@ class DrugDetailService:
             return None
         # itemSeq로 단건 조회했으므로 정상적인 경우 1건만 나온다.
         return response.body.items[0]
+
+    async def get_detail_by_name(self, item_name: str) -> Optional[DrugDetailApiItem]:
+        """증상 기반 추천에서 LLM이 제안한 제품명 후보를 공식 DB로 검증한다.
+
+        같은 이름의 다른 용량/제형 제품이 여러 건 검색될 수 있는데, 이 서비스는
+        일단 첫 번째 결과를 채택한다 — 정확한 단일 매칭이 중요해지면 item_name
+        완전 일치 필터를 추가하는 걸 권장한다(활용가이드에서 부분일치 지원
+        여부를 확인한 뒤). 0건이면 '실존 확인 실패'로 보고 None을 반환한다 —
+        호출부(app/symptom/service.py)는 이 후보를 그냥 버려야 한다.
+        """
+        response = await self._api_client.get_by_item_name(item_name)
+        if response.total_count == 0 or not response.body or not response.body.items:
+            return None
+        return response.body.items[0]

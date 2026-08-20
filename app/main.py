@@ -28,11 +28,18 @@ from app.drug_detail_client import DrugDetailApiClient
 from app.drug_detail_service import DrugDetailService
 from app.drug_detail_models import DrugDetailApiItem
 from app.identify_result import IdentifyResultItem, build_identify_result, needs_official_detail
-from app.models import PillMatchResult, VisionExtractionResult
+from app.models import PillMatchResult, UserInfo, VisionExtractionResult
 from app.pill_data_loader import load_pill_data
 from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
 from app.pill_matching_service import PillMatchingService
 from app.pipeline import fetch_detail_for_selected_candidate, identify_from_db, identify_from_db_batch, identify_pill
+from app.symptom.result_models import (
+    SymptomRecommendRequest,
+    SymptomRecommendResponse,
+    build_symptom_recommend_response,
+)
+from app.symptom.gemini_client import SymptomGeminiError
+from app.symptom.run import run_symptom_recommendation
 
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
@@ -98,17 +105,6 @@ class IdentifyDbResponse(BaseModel):
     vision_failed: bool = False
     vision_result: Optional[VisionExtractionResult] = None
     match_result: Optional[PillMatchResult] = None
-
-
-class UserInfo(BaseModel):
-    """배치 요청 시 백엔드가 함께 보내주는 유저 정보."""
-
-    user_id: int = Field(..., alias="userId", description="사용자 고유 ID (PK)")
-    name: str = Field(..., description="사용자 이름")
-    gender: str = Field(..., description="성별 (MALE / FEMALE)")
-    birth_date: date = Field(..., alias="birthDate", description="생년월일 (YYYY-MM-DD)")
-
-    model_config = {"populate_by_name": True}
 
 
 class BatchIdentifyDbItem(BaseModel):
@@ -252,6 +248,12 @@ async def gemini_vision_error_handler(_request: Request, exc: GeminiVisionError)
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
+@app.exception_handler(SymptomGeminiError)
+async def symptom_gemini_error_handler(_request: Request, exc: SymptomGeminiError) -> JSONResponse:
+    """증상 추천 쪽 Gemini 호출 실패도 동일하게 503으로 돌려준다."""
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -372,6 +374,28 @@ async def select_candidate(item_seq: str):
     """MULTIPLE_MATCHES 후보 목록에서 사용자가 하나를 고른 뒤 호출하는 Step 4 전용 엔드포인트."""
     detail = await fetch_detail_for_selected_candidate(item_seq, _detail_service)
     return SelectCandidateResponse(detail=detail)
+
+
+@app.post("/symptoms/recommend", response_model=SymptomRecommendResponse)
+async def recommend_by_symptom_voice(body: SymptomRecommendRequest):
+    """사진 촬영 전, 증상 음성(STT 결과 텍스트) + 유저 정보만으로 OTC 후보를 추천한다.
+
+    오디오 자체는 이 엔드포인트가 받지 않는다 — CLOVA Speech 실시간 스트리밍
+    인식으로 이미 텍스트로 변환된 결과(voice.symptom_text, voice.onset_text)를
+    받는다. 내부적으로 Gemini는 '증상/시각 추출'과 'OTC 제품명 후보 제안' 두
+    곳에서만 쓰이고, 최종적으로 노출되는 약 정보는 전부 e약은요 공식 API로
+    검증된 것만 남는다(app/symptom/service.py 참고) — 사진으로 확정된 게
+    아니므로 응답의 각 후보는 'AI_SUGGESTED'로 표시되고, 복용 전 확인이
+    필요하다는 안내가 항상 함께 내려간다.
+    """
+    result = await run_symptom_recommendation(
+        symptom_text=body.voice.symptom_text,
+        onset_text=body.voice.onset_text,
+        gender=body.user.gender,
+        birth_date=body.user.birth_date,
+        detail_service=_detail_service,
+    )
+    return build_symptom_recommend_response(result)
 
 
 @app.post("/admin/reload-pill-data")

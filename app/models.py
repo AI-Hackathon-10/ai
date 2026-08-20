@@ -8,10 +8,26 @@ Vision AI 추출 결과, 낱알식별 API 요청/응답, 매칭 결과를 표현
 """
 from __future__ import annotations
 
+from datetime import date
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class UserInfo(BaseModel):
+    """백엔드가 함께 보내주는(또는 프론트가 직접 보내는) 유저 정보.
+
+    원래 main.py에 배치 요청 전용으로 선언돼 있었지만, 증상 기반 추천
+    (app/symptom) 쪽 요청 모델도 그대로 재사용하기 위해 공용 모델로 옮겼다.
+    """
+
+    user_id: int = Field(..., alias="userId", description="사용자 고유 ID (PK)")
+    name: str = Field(..., description="사용자 이름")
+    gender: str = Field(..., description="성별 (MALE / FEMALE)")
+    birth_date: date = Field(..., alias="birthDate", description="생년월일 (YYYY-MM-DD)")
+
+    model_config = {"populate_by_name": True}
 
 
 class VisionExtractionResult(BaseModel):
