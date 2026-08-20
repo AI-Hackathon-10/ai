@@ -1,17 +1,17 @@
 """
-Vision AI 추출 결과 → 낱알식별 카탈로그를 로컬 필터해 의약품을 매칭한다.
+Vision AI가 1차로 추출한 각인·모양·색상·분할선을 하나의 조건으로 합쳐 낱알식별
+카탈로그와 직접 비교한다.
 
 식약처 getMdcinGrnIdntfcInfoList03 요청변수에는 품목명/업체명/품목코드 등만 있고
 각인·색·모양은 없다. 그래서 API에 PRINT_FRONT 를 보내지 않고, 전체 목록을 받은 뒤
 응답 필드(PRINT_FRONT, DRUG_SHAPE, COLOR_CLASS1 …)로 걸러낸다.
 
-핵심 아이디어: Vision AI 결과를 곧바로 한 번에 검색하지 않고,
-"가장 구체적인 조건 → 점점 완화되는 조건" 순서로 여러 레벨을 미리 만들어두고
-위에서부터 하나씩 필터하며 첫 번째로 "합리적인 개수"의 결과가 나오는 레벨에서 멈춘다.
+조건을 단계적으로 완화하는 로직은 두지 않는다 — Vision이 판단하지 못한 필드(None)는
+조건에서 그냥 빠지고, 나머지 필드로 한 번만 조회한다. color_class1/drug_shape 가
+둘 다 없는 경우(=조건을 하나도 못 만드는 경우)는 여기까지 오지 않는다 —
+app/vision/graph.py 가 그 시점에 이미 판단 불가로 끊어낸다.
 """
 from __future__ import annotations
-
-from dataclasses import dataclass, field
 
 from app.models import (
     MatchStatus,
@@ -22,7 +22,6 @@ from app.models import (
 )
 from app.pill_identification_api_client import PillIdentificationApiClient
 
-PRINT_CONFIDENCE_THRESHOLD = 0.6
 MAX_CANDIDATES = 10
 
 _FILTER_ATTRS = {
@@ -30,15 +29,8 @@ _FILTER_ATTRS = {
     "PRINT_BACK": "print_back",
     "DRUG_SHAPE": "drug_shape",
     "COLOR_CLASS1": "color_class1",
-    "COLOR_CLASS2": "color_class2",
 }
 _PRINT_FILTERS = {"PRINT_FRONT", "PRINT_BACK"}
-
-
-@dataclass
-class _QueryLevel:
-    name: str
-    params: dict[str, str] = field(default_factory=dict)
 
 
 class PillMatchingService:
@@ -46,103 +38,36 @@ class PillMatchingService:
         self._api_client = api_client
 
     async def match(self, vision: VisionExtractionResult) -> PillMatchResult:
-        levels = self._build_query_levels(vision)
+        filters = self._build_filters(vision)
+
         finder = getattr(self._api_client.__class__, "find", None)
-        catalog: list[PillApiItem] | None = None
-        if not callable(finder):
+        if callable(finder):
+            matched = await self._api_client.find(filters, limit=MAX_CANDIDATES + 1)
+        else:
             catalog = await self._api_client.get_catalog()
+            matched = [item for item in catalog if _item_matches(item, filters)]
 
-        for index, level in enumerate(levels):
-            if not level.params:
-                continue
-
-            if callable(finder):
-                matched = await self._api_client.find(level.params, limit=MAX_CANDIDATES + 1)
-            else:
-                assert catalog is not None
-                matched = [item for item in catalog if _item_matches(item, level.params)]
-            total = len(matched)
-
-            if total == 0:
-                continue
-
-            if total <= MAX_CANDIDATES:
-                candidates = [PillCandidate.from_item(item) for item in matched]
-                status = MatchStatus.SINGLE_MATCH if total == 1 else MatchStatus.MULTIPLE_MATCHES
-                return PillMatchResult(status=status, candidates=candidates, query_level_used=level.name)
-
-            is_last_level = index == len(levels) - 1
-            if is_last_level:
-                return PillMatchResult(
-                    status=MatchStatus.TOO_MANY_CANDIDATES,
-                    candidates=[],
-                    query_level_used=level.name,
-                )
-
-        return PillMatchResult(
-            status=MatchStatus.NO_MATCH,
-            candidates=[],
-            query_level_used="ALL_LEVELS_EXHAUSTED",
-        )
-
-    def _build_query_levels(self, v: VisionExtractionResult) -> list[_QueryLevel]:
-        """레벨은 '구체적인 것 → 넓은 것' 순서로 정의한다.
-
-        여기서 만드는 키(PRINT_FRONT, DRUG_SHAPE …)는 API 요청변수가 아니라
-        카탈로그 응답 필드로 로컬 필터할 때 쓰는 이름이다.
-        """
-        levels: list[_QueryLevel] = []
-
-        for print_fields, level_name in self._reliable_print_combinations(v):
-            params: dict[str, str] = dict(print_fields)
-            self._add_if_present(params, "DRUG_SHAPE", v.drug_shape)
-            self._add_if_present(params, "COLOR_CLASS1", v.color_class1)
-            self._add_if_present(params, "COLOR_CLASS2", v.color_class2)
-            levels.append(_QueryLevel(level_name, params))
-
-        p_shape_color: dict[str, str] = {}
-        self._add_if_present(p_shape_color, "DRUG_SHAPE", v.drug_shape)
-        self._add_if_present(p_shape_color, "COLOR_CLASS1", v.color_class1)
-        self._add_if_present(p_shape_color, "COLOR_CLASS2", v.color_class2)
-        levels.append(_QueryLevel("SHAPE_AND_COLOR", p_shape_color))
-
-        p_shape_primary: dict[str, str] = {}
-        self._add_if_present(p_shape_primary, "DRUG_SHAPE", v.drug_shape)
-        self._add_if_present(p_shape_primary, "COLOR_CLASS1", v.color_class1)
-        levels.append(_QueryLevel("SHAPE_AND_PRIMARY_COLOR", p_shape_primary))
-
-        p_color_only: dict[str, str] = {}
-        self._add_if_present(p_color_only, "COLOR_CLASS1", v.color_class1)
-        levels.append(_QueryLevel("COLOR_ONLY", p_color_only))
-
-        return levels
-
-    def _reliable_print_combinations(
-        self, v: VisionExtractionResult
-    ) -> list[tuple[dict[str, str], str]]:
-        front_reliable = (
-            self._present(v.print_front)
-            and v.print_front_confidence is not None
-            and v.print_front_confidence >= PRINT_CONFIDENCE_THRESHOLD
-        )
-        back_reliable = (
-            self._present(v.print_back)
-            and v.print_back_confidence is not None
-            and v.print_back_confidence >= PRINT_CONFIDENCE_THRESHOLD
-        )
-
-        combos: list[tuple[dict[str, str], str]] = []
-
-        if front_reliable and back_reliable:
-            combos.append(
-                ({"PRINT_FRONT": v.print_front, "PRINT_BACK": v.print_back}, "STRICT_WITH_PRINT_BOTH")
+        total = len(matched)
+        if total == 0:
+            return PillMatchResult(status=MatchStatus.NO_MATCH, candidates=[], query_level_used="DIRECT_MATCH")
+        if total > MAX_CANDIDATES:
+            return PillMatchResult(
+                status=MatchStatus.TOO_MANY_CANDIDATES, candidates=[], query_level_used="DIRECT_MATCH"
             )
-        if front_reliable:
-            combos.append(({"PRINT_FRONT": v.print_front}, "STRICT_WITH_PRINT_FRONT_ONLY"))
-        if back_reliable:
-            combos.append(({"PRINT_BACK": v.print_back}, "STRICT_WITH_PRINT_BACK_ONLY"))
 
-        return combos
+        candidates = [PillCandidate.from_item(item) for item in matched]
+        status = MatchStatus.SINGLE_MATCH if total == 1 else MatchStatus.MULTIPLE_MATCHES
+        return PillMatchResult(status=status, candidates=candidates, query_level_used="DIRECT_MATCH")
+
+    def _build_filters(self, v: VisionExtractionResult) -> dict[str, str]:
+        filters: dict[str, str] = {}
+        self._add_if_present(filters, "PRINT_FRONT", v.print_front)
+        self._add_if_present(filters, "PRINT_BACK", v.print_back)
+        self._add_if_present(filters, "DRUG_SHAPE", v.drug_shape)
+        self._add_if_present(filters, "COLOR_CLASS1", v.color_class1)
+        if v.score_line is not None:  # False도 "판단됨"이라 필터에 넣어야 함
+            filters["SCORE_LINE"] = "true" if v.score_line else "false"
+        return filters
 
     @staticmethod
     def _present(value: str | None) -> bool:
@@ -158,8 +83,20 @@ def _normalize_print(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
+def _has_score_line(item: PillApiItem) -> bool:
+    """테이블에 SCORE_LINE 컬럼은 없다 — line_front/line_back 중 하나라도 값이
+    있으면 분할선이 있는 것으로 본다(app/pill_identification_repository.py 의
+    SQL 버전과 동일한 판단 기준)."""
+    return bool((item.line_front and item.line_front.strip()) or (item.line_back and item.line_back.strip()))
+
+
 def _item_matches(item: PillApiItem, filters: dict[str, str]) -> bool:
     for key, expected in filters.items():
+        if key == "SCORE_LINE":
+            if _has_score_line(item) != (expected == "true"):
+                return False
+            continue
+
         attr = _FILTER_ATTRS.get(key)
         if attr is None:
             continue

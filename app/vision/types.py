@@ -23,7 +23,6 @@ class GeminiVisionCallFn(Protocol):
         self,
         front_image_bytes: bytes,
         back_image_bytes: Optional[bytes],
-        retry_hint: Optional[str],
         front_mime_type: str = "image/jpeg",
         back_mime_type: Optional[str] = None,
     ) -> dict:
@@ -35,8 +34,6 @@ class VisionGraphState(TypedDict, total=False):
     back_image_bytes: Optional[bytes]
     front_image_mime_type: str
     back_image_mime_type: Optional[str]
-    attempt: int
     raw_output: Optional[dict]
-    retry_hint: Optional[str]
     result: Optional[VisionExtractionResult]
     failed: bool

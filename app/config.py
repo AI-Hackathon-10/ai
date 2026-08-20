@@ -42,6 +42,22 @@ class Settings(BaseSettings):
     mysql_password: str = Field(default="", validation_alias=AliasChoices("MYSQL_PASSWORD", "DB_PASSWORD"))
     mysql_db: str = Field(default="pillcare", validation_alias=AliasChoices("MYSQL_DB"))
 
+    # LangSmith(https://smith.langchain.com) 트레이싱. 기본값은 꺼짐 — 키가 없거나
+    # langsmith_tracing=false 면 app/vision 그래프는 트레이싱 없이 평소처럼 동작한다.
+    langsmith_tracing: bool = Field(
+        default=False, validation_alias=AliasChoices("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+    )
+    langsmith_api_key: str = Field(
+        default="", validation_alias=AliasChoices("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+    )
+    langsmith_project: str = Field(
+        default="pill-ai", validation_alias=AliasChoices("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT")
+    )
+    langsmith_endpoint: str = Field(
+        default="https://api.smith.langchain.com",
+        validation_alias=AliasChoices("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"),
+    )
+
 
 settings = Settings()
 
@@ -51,3 +67,11 @@ settings = Settings()
 # (setdefault는 이미 키가 있으면 덮어쓰지 않음).
 if settings.gemini_api_key:
     os.environ.setdefault("GEMINI_API_KEY", settings.gemini_api_key)
+
+# langsmith SDK도 마찬가지로 os.environ을 직접 읽으므로 같은 방식으로 다리를 놓는다.
+# 키가 없는데 tracing만 true인 실수를 막기 위해 둘 다 있을 때만 켠다.
+if settings.langsmith_tracing and settings.langsmith_api_key:
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    os.environ.setdefault("LANGSMITH_API_KEY", settings.langsmith_api_key)
+    os.environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
+    os.environ.setdefault("LANGSMITH_ENDPOINT", settings.langsmith_endpoint)

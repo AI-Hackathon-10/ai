@@ -28,7 +28,13 @@ from app.models import PillMatchResult, VisionExtractionResult
 from app.pill_identification_api_client import PillIdentificationApiClient
 from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
 from app.pill_matching_service import PillMatchingService
-from app.pipeline import fetch_detail_for_selected_candidate, identify_from_db, identify_pill
+from app.pipeline import (
+    IndexedPillOutcome,
+    fetch_detail_for_selected_candidate,
+    identify_from_db,
+    identify_pill,
+    identify_pills_batch,
+)
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
 
@@ -72,6 +78,23 @@ class IdentifyResponse(BaseModel):
 
 class SelectCandidateResponse(BaseModel):
     detail: Optional[DrugDetailApiItem] = None
+
+
+class IdentifyBatchRequest(BaseModel):
+    """알약이 여러 개일 때 쓴다. pills 의 원소 하나 = 알약 하나(앞+뒤 세트) —
+    앞뒷면을 한 세트로 묶는 IdentifyRequest 를 그대로 재사용해서 리스트로 받는다."""
+
+    pills: list[IdentifyRequest] = Field(
+        ..., min_length=1, description="알약별 앞/뒤 이미지 세트 목록 (원소 하나 = 알약 하나)"
+    )
+
+
+class IdentifyBatchResponse(BaseModel):
+    """/identify/batch 응답. results 는 pills 순서대로 pill_index(1부터)가 붙어서
+    나온다 — 프론트에서 "알약1", "알약2" 로 그대로 표시하면 된다."""
+
+    total: int
+    results: list[IndexedPillOutcome]
 
 
 class VisionExtractResponse(BaseModel):
@@ -206,6 +229,26 @@ async def identify(body: IdentifyRequest):
         match_result=outcome.match_result,
         detail=outcome.detail,
     )
+
+
+@app.post("/identify/batch", response_model=IdentifyBatchResponse)
+async def identify_batch(body: IdentifyBatchRequest):
+    """알약이 여러 개일 때 쓴다. body.pills 의 원소 하나(앞+뒤 세트)가 알약 하나다 —
+    각 원소를 /identify와 동일하게 Step 2 -> 3 -> (조건부) 4 로 돌리고, 결과에
+    1부터 시작하는 pill_index 를 붙여서 모아 돌려준다.
+
+    알약 하나가 Vision 호출에 실패해도(예: Gemini 503) 그 알약만 vision_failed=True로
+    표시될 뿐 나머지 알약들의 결과는 그대로 반환된다.
+    """
+    pills = [
+        (front_bytes, back_bytes, front_mime_type, back_mime_type)
+        for front_bytes, front_mime_type, back_bytes, back_mime_type in (
+            _decode_request_images(item) for item in body.pills
+        )
+    ]
+
+    batch_outcome = await identify_pills_batch(pills, _matching_service, _detail_service)
+    return IdentifyBatchResponse(total=batch_outcome.total, results=batch_outcome.results)
 
 
 @app.post("/vision/extract", response_model=VisionExtractResponse)

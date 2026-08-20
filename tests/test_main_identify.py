@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 import app.main as main_mod
 from app.models import MatchStatus, PillCandidate, PillMatchResult, VisionExtractionResult
-from app.pipeline import IdentifyFromDbOutcome, PillIdentificationOutcome
+from app.pipeline import IdentifyFromDbOutcome, IndexedPillOutcome, PillBatchOutcome, PillIdentificationOutcome
 from app.vision.gemini_client import GeminiVisionError
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png-bytes"
@@ -87,19 +87,61 @@ def test_vision_failed면_그대로_응답에_반영된다(client, monkeypatch):
     assert body["match_result"] is None
 
 
+def test_identify_batch는_알약마다_번호와_total을_붙여_반환한다(client, monkeypatch):
+    async def fake_identify_pills_batch(pills, matching_service, detail_service):
+        assert len(pills) == 2
+        return PillBatchOutcome(
+            total=2,
+            results=[
+                IndexedPillOutcome(
+                    pill_index=1,
+                    vision_failed=False,
+                    match_result=PillMatchResult(
+                        status=MatchStatus.SINGLE_MATCH,
+                        candidates=[PillCandidate(item_seq="1", item_name="약A")],
+                        query_level_used="DIRECT_MATCH",
+                    ),
+                ),
+                IndexedPillOutcome(pill_index=2, vision_failed=True),
+            ],
+        )
+
+    monkeypatch.setattr(main_mod, "identify_pills_batch", fake_identify_pills_batch)
+
+    response = client.post(
+        "/identify/batch",
+        json={
+            "pills": [
+                {"front_image": f"data:image/png;base64,{_PNG_B64}"},
+                {"front_image": f"data:image/png;base64,{_PNG_B64}"},
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert [r["pill_index"] for r in body["results"]] == [1, 2]
+    assert body["results"][0]["vision_failed"] is False
+    assert body["results"][0]["match_result"]["status"] == "SINGLE_MATCH"
+    assert body["results"][1]["vision_failed"] is True
+    assert body["results"][1]["match_result"] is None
+
+
+def test_identify_batch는_pills가_비어있으면_422를_반환한다(client):
+    response = client.post("/identify/batch", json={"pills": []})
+    assert response.status_code == 422
+
+
 def test_vision_extract는_매칭없이_vision_결과만_그대로_반환한다(client, monkeypatch):
     async def fake_run_vision_extraction(front_bytes, back_bytes, **kwargs):
         assert front_bytes == _PNG_BYTES
         assert kwargs["front_mime_type"] == "image/png"
         return VisionExtractionResult(
             print_front="TYLENOL",
-            print_front_confidence=0.9,
             print_back="500",
-            print_back_confidence=0.85,
             color_class1="하양",
             drug_shape="장방형",
-            form_code_name="정제",
-            overall_confidence=0.88,
         )
 
     monkeypatch.setattr(main_mod, "run_vision_extraction", fake_run_vision_extraction)
@@ -136,10 +178,8 @@ def test_vision_extract도_front_image가_빈문자열이면_400을_반환한다
 def test_identify_db는_vision_추출값으로_테이블_매칭_결과를_반환한다(client, monkeypatch):
     vision = VisionExtractionResult(
         print_front="YH",
-        print_front_confidence=0.9,
         color_class1="노랑",
         drug_shape="원형",
-        overall_confidence=0.88,
     )
 
     async def fake_identify_from_db(front_bytes, back_bytes, matching_service, **kwargs):
@@ -159,7 +199,7 @@ def test_identify_db는_vision_추출값으로_테이블_매칭_결과를_반환
                         color_class1="노랑",
                     )
                 ],
-                query_level_used="STRICT_WITH_PRINT_FRONT_ONLY",
+                query_level_used="DIRECT_MATCH",
             ),
         )
 
@@ -216,7 +256,7 @@ def test_vision_extract는_swagger_placeholder_뒷면값은_무시한다(client,
     async def fake_run_vision_extraction(front_bytes, back_bytes, **kwargs):
         assert back_bytes is None
         assert not kwargs.get("back_mime_type") or kwargs["back_mime_type"].startswith("image/")
-        return VisionExtractionResult(color_class1="하양", drug_shape="원형", overall_confidence=0.7)
+        return VisionExtractionResult(color_class1="하양", drug_shape="원형")
 
     monkeypatch.setattr(main_mod, "run_vision_extraction", fake_run_vision_extraction)
 

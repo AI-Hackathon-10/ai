@@ -4,6 +4,9 @@ pill_identification 테이블에서 Vision 추출 조건으로 후보를 조회�
 각인(PRINT_FRONT/PRINT_BACK)은 공백·대소문자를 무시하고,
 색/모양은 TRIM 한 값으로 비교한다. 후보가 너무 많은지 판단하려면
 MAX_CANDIDATES+1 건만 가져오면 되므로 LIMIT 을 건다.
+
+SCORE_LINE 은 테이블에 그 이름의 컬럼이 없다 — line_front/line_back 중 하나라도
+비어있지 않으면 분할선이 있는 것으로 본다.
 """
 from __future__ import annotations
 
@@ -23,6 +26,8 @@ FILTER_COLUMNS = {
     "COLOR_CLASS2": "color_class2",
 }
 _PRINT_FILTERS = {"PRINT_FRONT", "PRINT_BACK"}
+_SCORE_LINE_KEY = "SCORE_LINE"
+_HAS_SCORE_LINE_SQL = "(TRIM(IFNULL(line_front, '')) != '' OR TRIM(IFNULL(line_back, '')) != '')"
 
 SELECT_COLUMNS = (
     "item_seq",
@@ -47,6 +52,13 @@ def build_find_query(
     clauses: list[str] = []
     params: list[Any] = []
     for key, expected in filters.items():
+        if key == _SCORE_LINE_KEY:
+            value = str(expected).strip().lower()
+            if value not in ("true", "false"):
+                continue
+            clauses.append(_HAS_SCORE_LINE_SQL if value == "true" else f"NOT {_HAS_SCORE_LINE_SQL}")
+            continue
+
         column = FILTER_COLUMNS.get(key)
         if column is None:
             continue
