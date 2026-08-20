@@ -21,8 +21,9 @@ from pydantic import BaseModel, ConfigDict
 
 from app.drug_detail_models import DrugDetailApiItem
 from app.drug_detail_service import DrugDetailService
-from app.models import MatchStatus, PillMatchResult, VisionExtractionResult
+from app.models import MatchStatus, PillCandidate, PillMatchResult, VisionExtractionResult
 from app.pill_matching_service import PillMatchingService
+from app.vector_pill_store import VectorPillStore
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
 
@@ -144,8 +145,13 @@ async def identify_from_db(
     matching_service: PillMatchingService,
     front_mime_type: str = "image/jpeg",
     back_mime_type: Optional[str] = None,
+    vector_store: Optional[VectorPillStore] = None,
 ) -> IdentifyFromDbOutcome:
-    """Step 2(Vision 추출) 후 pill_identification 테이블만 조회한다."""
+    """Step 2(Vision 추출) 후 pill_identification 테이블만 조회한다.
+
+    SQL 매칭이 NO_MATCH일 때 vector_store가 준비되어 있으면 벡터 유사도
+    검색으로 폴백한다.
+    """
 
     vision_result = await run_vision_extraction(
         front_image_bytes,
@@ -157,12 +163,55 @@ async def identify_from_db(
         return IdentifyFromDbOutcome(vision_failed=True)
 
     match_result = await matching_service.match(vision_result)
+
+    if match_result.status == MatchStatus.NO_MATCH and vector_store and vector_store.ready:
+        match_result = await _vector_fallback(vision_result, match_result, vector_store)
+
     return IdentifyFromDbOutcome(vision_result=vision_result, match_result=match_result)
+
+
+async def _vector_fallback(
+    vision: VisionExtractionResult,
+    original_result: PillMatchResult,
+    vector_store: VectorPillStore,
+) -> PillMatchResult:
+    """SQL 매칭 NO_MATCH 시 벡터 유사도 검색으로 폴백한다."""
+    query_text = VectorPillStore.vision_to_query_text(vision)
+    results = await vector_store.search(query_text)
+    if not results:
+        return original_result
+
+    top_item, top_score = results[0]
+
+    # 1위가 0.85 이상이고 2위와 차이가 충분하면 SINGLE_MATCH로 승격
+    if top_score >= 0.85:
+        if len(results) == 1 or top_score - results[1][1] > 0.05:
+            candidate = PillCandidate.from_item(top_item)
+            candidate.similarity_score = round(top_score, 4)
+            return PillMatchResult(
+                status=MatchStatus.SINGLE_MATCH,
+                candidates=[candidate],
+                query_level_used="VECTOR_MATCH",
+            )
+
+    # 그 외: 후보 목록과 함께 NO_MATCH (기존 SQL 완화 검색 결과보다 우선)
+    candidates = []
+    for item, score in results:
+        c = PillCandidate.from_item(item)
+        c.similarity_score = round(score, 4)
+        candidates.append(c)
+
+    return PillMatchResult(
+        status=MatchStatus.NO_MATCH,
+        candidates=candidates,
+        query_level_used="VECTOR_MATCH",
+    )
 
 
 async def identify_from_db_batch(
     items: list[dict],
     matching_service: PillMatchingService,
+    vector_store: Optional[VectorPillStore] = None,
 ) -> list[IdentifyFromDbOutcome]:
     """여러 알약 이미지 세트를 동시에 Vision 추출 + DB 매칭한다.
 
@@ -178,6 +227,7 @@ async def identify_from_db_batch(
             matching_service=matching_service,
             front_mime_type=item["front_mime_type"],
             back_mime_type=item["back_mime_type"],
+            vector_store=vector_store,
         )
 
     results = await asyncio.gather(

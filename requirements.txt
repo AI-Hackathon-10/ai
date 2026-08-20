@@ -11,3 +11,4 @@ openai>=1.0
 pytest>=8.0
 pytest-asyncio>=0.23
 pymysql>=1.1
+numpy>=1.26

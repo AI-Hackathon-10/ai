@@ -20,6 +20,7 @@ from typing import Optional, Union
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from openai import AsyncOpenAI
 from pydantic import AwareDatetime, BaseModel, Field
 
 from app.base64_images import decode_base64_image_or_400
@@ -28,11 +29,17 @@ from app.drug_detail_client import DrugDetailApiClient
 from app.drug_detail_service import DrugDetailService
 from app.drug_detail_models import DrugDetailApiItem
 from app.identify_result import IdentifyResultItem, build_identify_result, needs_official_detail
-from app.models import PillMatchResult, VisionExtractionResult
+from app.models import PillApiItem, PillMatchResult, VisionExtractionResult
 from app.pill_data_loader import load_pill_data
-from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
+from app.pill_identification_repository import (
+    MysqlPillCatalogClient,
+    PillIdentificationRepository,
+    SELECT_COLUMNS,
+    row_to_item,
+)
 from app.pill_matching_service import PillMatchingService
 from app.pipeline import fetch_detail_for_selected_candidate, identify_from_db, identify_from_db_batch, identify_pill
+from app.vector_pill_store import VectorPillStore
 
 from app.vision.gemini_client import GeminiVisionError
 from app.vision.run import run_vision_extraction
@@ -222,14 +229,19 @@ _detail_api_client = DrugDetailApiClient(
 )
 _detail_service = DrugDetailService(_detail_api_client)
 
+_openai_client = AsyncOpenAI()  # OPENAI_API_KEY 환경변수 자동 사용
+_vector_store = VectorPillStore(_openai_client)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 서버 시작 시 낱알식별 데이터를 백그라운드에서 DB에 적재한다.
     # 적재가 완료되기 전에도 서버는 요청을 받을 수 있다.
     task = asyncio.create_task(_startup_load_pill_data())
+    vector_task = asyncio.create_task(_startup_build_vector_index())
     yield
     task.cancel()
+    vector_task.cancel()
     await _detail_api_client.aclose()
     await _http_client.aclose()
 
@@ -241,6 +253,28 @@ async def _startup_load_pill_data():
         logger.info("시작 시 낱알식별 데이터 적재 완료: %d건", count)
     except Exception:
         logger.exception("시작 시 낱알식별 데이터 적재 실패 — 기존 DB 데이터로 서비스합니다.")
+
+
+def _load_all_pill_items() -> list[PillApiItem]:
+    """MySQL에서 pill_identification 전체를 로드한다."""
+    conn = _mysql_connect()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT {', '.join(SELECT_COLUMNS)} FROM pill_identification")
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+    return [row_to_item(row) for row in rows]
+
+
+async def _startup_build_vector_index():
+    """서버 시작 시 벡터 인덱스 빌드. 실패해도 서버는 정상 동작한다 (SQL 매칭만 사용)."""
+    try:
+        items = await asyncio.to_thread(_load_all_pill_items)
+        if items:
+            await _vector_store.build(items)
+    except Exception:
+        logger.exception("벡터 인덱스 빌드 실패 — SQL 매칭만 사용합니다.")
 
 
 app = FastAPI(title="알약 식별 API", lifespan=lifespan)
@@ -315,6 +349,7 @@ async def identify_db(body: IdentifyRequest):
         _matching_service,
         front_mime_type=front_mime_type,
         back_mime_type=back_mime_type,
+        vector_store=_vector_store,
     )
     return IdentifyDbResponse(
         vision_failed=outcome.vision_failed,
@@ -338,7 +373,7 @@ async def identify_db_batch(body: BatchIdentifyDbRequest):
             "back_mime_type": back_mime_type,
         })
 
-    outcomes = await identify_from_db_batch(decoded_items, _matching_service)
+    outcomes = await identify_from_db_batch(decoded_items, _matching_service, vector_store=_vector_store)
 
     async def _detail_for(outcome):
         if not needs_official_detail(outcome):
