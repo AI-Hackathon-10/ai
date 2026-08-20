@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Optional, Union
 
 import httpx
@@ -26,6 +27,7 @@ from app.config import settings
 from app.drug_detail_client import DrugDetailApiClient
 from app.drug_detail_service import DrugDetailService
 from app.drug_detail_models import DrugDetailApiItem
+from app.identify_result import IdentifyResultItem, build_identify_result, needs_official_detail
 from app.models import PillMatchResult, VisionExtractionResult
 from app.pill_data_loader import load_pill_data
 from app.pill_identification_repository import MysqlPillCatalogClient, PillIdentificationRepository
@@ -98,6 +100,17 @@ class IdentifyDbResponse(BaseModel):
     match_result: Optional[PillMatchResult] = None
 
 
+class UserInfo(BaseModel):
+    """배치 요청 시 백엔드가 함께 보내주는 유저 정보."""
+
+    user_id: int = Field(..., alias="userId", description="사용자 고유 ID (PK)")
+    name: str = Field(..., description="사용자 이름")
+    gender: str = Field(..., description="성별 (MALE / FEMALE)")
+    birth_date: date = Field(..., alias="birthDate", description="생년월일 (YYYY-MM-DD)")
+
+    model_config = {"populate_by_name": True}
+
+
 class BatchIdentifyDbItem(BaseModel):
     """배치 요청의 개별 항목. id 가 최상단에 위치하도록 필드 순서를 직접 정의한다."""
 
@@ -125,26 +138,20 @@ class BatchIdentifyDbRequest(BaseModel):
     id 필드가 추가된 형태다.
     """
 
+    user: UserInfo = Field(..., description="요청 유저 정보")
+    symptoms: list[str] = Field(
+        default_factory=list,
+        description="사용자가 선택한 증상 (SymptomType enum 값: HEADACHE, FEVER 등). 여러 개 선택 가능",
+    )
     items: list[BatchIdentifyDbItem] = Field(
         ..., description="알약 이미지 세트 리스트", min_length=1
     )
 
 
-class BatchIdentifyDbResultItem(BaseModel):
-    """배치 결과의 개별 항목. 요청 시 보낸 id 를 그대로 돌려준다."""
-
-    id: str = Field(..., description="요청 시 보낸 알약 식별 ID")
-    index: int = Field(..., description="요청 리스트에서의 인덱스 (0부터 시작)")
-    vision_failed: bool = False
-    vision_result: Optional[VisionExtractionResult] = None
-    match_result: Optional[PillMatchResult] = None
-
-
 class BatchIdentifyDbResponse(BaseModel):
-    """/identify/db/batch 응답. 요청한 순서대로 결과가 담긴다."""
+    """/identify/db/batch 응답. 요청한 순서대로 result 리스트를 담는다."""
 
-    total: int = Field(..., description="요청된 알약 수")
-    results: list[BatchIdentifyDbResultItem] = Field(default_factory=list)
+    result: list[IdentifyResultItem] = Field(default_factory=list)
 
 
 def _optional_body_value(raw: Optional[str]) -> Optional[str]:
@@ -310,10 +317,8 @@ async def identify_db(body: IdentifyRequest):
 
 @app.post("/identify/db/batch", response_model=BatchIdentifyDbResponse)
 async def identify_db_batch(body: BatchIdentifyDbRequest):
-    """여러 알약 이미지를 한 번에 Vision 추출 + DB 매칭한다.
-
-    요청 리스트의 각 항목은 기존 /identify/db 와 동일한 형식이며,
-    모든 항목을 병렬로 처리하여 결과를 반환한다.
+    """여러 알약 이미지를 한 번에 Vision 추출 + DB 매칭하고, 확정된 항목은
+    상세정보까지 조회한다. 응답은 요청 순서의 `result` 리스트다.
     """
     decoded_items: list[dict] = []
     for item in body.items:
@@ -327,17 +332,28 @@ async def identify_db_batch(body: BatchIdentifyDbRequest):
 
     outcomes = await identify_from_db_batch(decoded_items, _matching_service)
 
-    results = [
-        BatchIdentifyDbResultItem(
+    async def _detail_for(outcome):
+        if not needs_official_detail(outcome):
+            return None
+        item_seq = outcome.match_result.candidates[0].item_seq
+        try:
+            return await _detail_service.get_detail(item_seq)
+        except Exception:
+            logger.exception("배치 항목 e약은요 상세정보 조회 실패: item_seq=%s", item_seq)
+            return None
+
+    details = await asyncio.gather(*[_detail_for(outcome) for outcome in outcomes])
+
+    result = [
+        build_identify_result(
             id=body.items[i].id,
-            index=i,
-            vision_failed=outcome.vision_failed,
-            vision_result=outcome.vision_result,
-            match_result=outcome.match_result,
+            outcome=outcomes[i],
+            detail=details[i],
+            symptoms=body.symptoms,
         )
-        for i, outcome in enumerate(outcomes)
+        for i in range(len(outcomes))
     ]
-    return BatchIdentifyDbResponse(total=len(results), results=results)
+    return BatchIdentifyDbResponse(result=result)
 
 
 @app.post("/identify/select/{item_seq}", response_model=SelectCandidateResponse)

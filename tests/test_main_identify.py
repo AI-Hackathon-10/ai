@@ -232,3 +232,92 @@ def test_vision_extract는_swagger_placeholder_뒷면값은_무시한다(client,
 
     assert response.status_code == 200
     assert response.json()["vision_failed"] is False
+
+
+def test_identify_db_batch는_result를_리스트로_반환한다(client, monkeypatch):
+    vision = VisionExtractionResult(
+        print_front="TYLENOL",
+        print_front_confidence=0.95,
+        print_back="500",
+        print_back_confidence=0.9,
+        color_class1="하양",
+        drug_shape="장방형",
+        line_front="+",
+        overall_confidence=1.0,
+    )
+    match = PillMatchResult(
+        status=MatchStatus.SINGLE_MATCH,
+        candidates=[
+            PillCandidate(
+                item_seq="199703222",
+                item_name="타이레놀정500밀리그람",
+                item_image="https://nedrug.mfds.go.kr/image.png",
+                print_front="TYLENOL",
+                print_back="500",
+                drug_shape="장방형",
+                color_class1="하양",
+            )
+        ],
+        query_level_used="STRICT_WITH_PRINT_BOTH",
+    )
+
+    async def fake_identify_from_db_batch(items, matching_service):
+        assert len(items) == 2
+        assert matching_service is main_mod._matching_service
+        return [
+            IdentifyFromDbOutcome(vision_failed=False, vision_result=vision, match_result=match),
+            IdentifyFromDbOutcome(vision_failed=True),
+        ]
+
+    async def fake_get_detail(item_seq):
+        assert item_seq == "199703222"
+        from app.drug_detail_models import DrugDetailApiItem
+
+        return DrugDetailApiItem(
+            item_seq="199703222",
+            item_name="타이레놀정500밀리그람",
+            item_image="https://nedrug.mfds.go.kr/image.png",
+            efficacy="두통, 발열 완화",
+            precautions="다른 아세트아미노펜 함유 의약품과 함께 복용하지 마십시오.",
+        )
+
+    monkeypatch.setattr(main_mod, "identify_from_db_batch", fake_identify_from_db_batch)
+    monkeypatch.setattr(main_mod._detail_service, "get_detail", fake_get_detail)
+
+    response = client.post(
+        "/identify/db/batch",
+        json={
+            "user": {
+                "userId": 1,
+                "name": "홍길동",
+                "gender": "MALE",
+                "birthDate": "1990-01-15",
+            },
+            "symptoms": ["HEADACHE"],
+            "items": [
+                {"id": "1", "front_image": f"data:image/png;base64,{_PNG_B64}"},
+                {"id": "2", "front_image": f"data:image/png;base64,{_PNG_B64}"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "results" not in body
+    assert "total" not in body
+    assert isinstance(body["result"], list)
+    assert len(body["result"]) == 2
+
+    first, second = body["result"]
+    assert first["id"] == "1"
+    assert first["ok"] is True
+    assert first["itemSeq"] == "199703222"
+    assert first["itemName"] == "타이레놀정500밀리그람"
+    assert first["identification"]["confidence"] == "HIGH"
+    assert first["features"]["frontImprint"] == "TYLENOL"
+    assert first["features"]["shape"] == "OBLONG"
+    assert first["official"]["itemSeq"] == "199703222"
+    assert first["recommendation"]["status"] == "RECOMMENDED"
+    assert second["id"] == "2"
+    assert second["ok"] is False
+    assert second["itemSeq"] is None

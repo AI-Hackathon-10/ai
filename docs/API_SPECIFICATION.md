@@ -333,7 +333,193 @@ POST /identify/select/199900001
 
 ---
 
-### 3.5 `POST /admin/reload-pill-data` - 낱알식별 데이터 수동 적재
+### 3.5 `POST /identify/db/batch` - 다중 알약 일괄 식별 (Vision + DB 매칭)
+
+여러 알약 이미지를 한 번에 보내서 Vision 추출 + DB 매칭 + (확정 시) 상세정보 조회를 일괄 수행합니다.
+각 항목은 `/identify/db`와 동일한 이미지 필드에 클라이언트 지정 `id`가 추가된 형태이며,
+모든 항목이 **병렬로** 처리됩니다. 개별 항목의 실패가 전체 요청을 중단시키지 않습니다.
+
+응답은 백엔드가 받는 형식과 동일하게 `result` 리스트입니다.
+
+#### Request
+
+```http
+POST /identify/db/batch
+Content-Type: application/json
+```
+
+```jsonc
+{
+    "user": {                                       // 필수. 요청 유저 정보
+        "userId": 1,
+        "name": "홍길동",
+        "gender": "MALE",                           // MALE / FEMALE
+        "birthDate": "1990-01-15"                    // YYYY-MM-DD
+    },
+    "symptoms": ["HEADACHE", "FEVER"],              // 선택. SymptomType enum 값 (여러 개 가능)
+    "items": [
+        {
+            "id": "1",                                             // 필수. 클라이언트 지정 식별 ID
+            "front_image": "data:image/png;base64,iVBORw0KGgo...", // 필수. 앞면 이미지
+            "back_image": null,                                    // 선택. 뒷면 이미지
+            "front_mime_type": "image/jpeg",                       // 선택. 기본: image/jpeg
+            "back_mime_type": null                                 // 선택. 뒷면 MIME
+        },
+        {
+            "id": "2",
+            "front_image": "data:image/jpeg;base64,/9j/4AAQ...",
+            "back_image": "data:image/jpeg;base64,/9j/4BBR...",
+            "front_mime_type": "image/jpeg",
+            "back_mime_type": "image/jpeg"
+        }
+    ]
+}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `user` | `UserInfo` | **필수** | 요청 유저 정보 |
+| `symptoms` | `string[]` | 선택 | SymptomType enum 값 리스트 (`HEADACHE`, `FEVER` 등). 여러 개 선택 가능 |
+| `items` | `BatchIdentifyDbItem[]` | **필수** | 알약 이미지 세트 리스트 (최소 1개) |
+
+**`UserInfo` 필드:**
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `userId` | `integer` | **필수** | 사용자 고유 ID (PK) |
+| `name` | `string` | **필수** | 사용자 이름 |
+| `gender` | `string` | **필수** | 성별 (`MALE` / `FEMALE`) |
+| `birthDate` | `string (YYYY-MM-DD)` | **필수** | 생년월일 |
+
+**`SymptomType` enum 허용값:**
+
+| enum 값 | 한글명 |
+|---------|--------|
+| `HEADACHE` | 두통 |
+| `FEVER` | 발열 |
+| `COUGH` | 기침 |
+| `SORE_THROAT` | 인후통 |
+| `RUNNY_NOSE` | 콧물 |
+| `NASAL_CONGESTION` | 코막힘 |
+| `ABDOMINAL_PAIN` | 복통 |
+| `INDIGESTION` | 소화불량 |
+| `DIARRHEA` | 설사 |
+| `CONSTIPATION` | 변비 |
+| `HEARTBURN` | 속쓰림 |
+| `NAUSEA_OR_VOMITING` | 구토/메스꺼움 |
+| `MUSCLE_PAIN` | 근육통 |
+| `MENSTRUAL_CRAMPS` | 생리통 |
+| `TOOTHACHE` | 치통 |
+| `ALLERGY` | 알레르기 |
+| `ITCHY_SKIN` | 피부 가려움 |
+| `BODY_ACHES` | 몸살 |
+| `DIZZINESS` | 어지러움 |
+| `CHILLS` | 오한 |
+
+**`BatchIdentifyDbItem` 필드:**
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `id` | `string` | **필수** | 클라이언트가 부여한 알약 식별 ID. 응답에서 그대로 반환 |
+| `front_image` | `string` | **필수** | 앞면 이미지. base64 또는 data URI |
+| `back_image` | `string \| null` | 선택 | 뒷면 이미지 |
+| `front_mime_type` | `string` | 선택 | 순수 base64일 때 MIME 타입. 기본값: `image/jpeg` |
+| `back_mime_type` | `string \| null` | 선택 | 뒷면 MIME 타입 |
+
+#### Response - 성공 (`200 OK`)
+
+```jsonc
+{
+    "result": [
+        {
+            "id": "1",
+            "ok": true,
+            "itemSeq": "199703222",
+            "itemName": "타이레놀정500밀리그람",
+            "imageUrl": "https://nedrug.mfds.go.kr/...",
+            "identification": {
+                "confidence": "HIGH",
+                "score": 1.0
+            },
+            "recommendation": {
+                "status": "RECOMMENDED",
+                "score": 0.94,
+                "confidence": "HIGH",
+                "reason": "현재 입력한 증상과 해당 의약품의 효능이 일치합니다.",
+                "caution": "다른 아세트아미노펜 함유 의약품과 함께 복용하지 마십시오."
+            },
+            "features": {
+                "frontImprint": "TYLENOL",
+                "backImprint": "500",
+                "shape": "OBLONG",
+                "color": "WHITE",
+                "scoreLine": true
+            },
+            "official": {
+                "itemSeq": "199703222",
+                "itemName": "타이레놀정500밀리그람",
+                "efficacy": "...",
+                "useMethod": "...",
+                "warning": "...",
+                "caution": "...",
+                "interaction": "...",
+                "sideEffect": "...",
+                "storage": "...",
+                "imageUrl": "https://nedrug.mfds.go.kr/..."
+            },
+            "document": "..."
+        },
+        {
+            "id": "2",
+            "ok": false,
+            "itemSeq": null,
+            "itemName": null,
+            "imageUrl": null,
+            "identification": { "confidence": "LOW", "score": 0.0 },
+            "recommendation": null,
+            "features": null,
+            "official": null,
+            "document": null
+        }
+    ]
+}
+```
+
+#### Response 필드
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `result` | `IdentifyResultItem[]` | 요청 순서대로 판별 결과 리스트 |
+
+**`IdentifyResultItem` 필드:**
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | `string` | 요청 시 보낸 알약 식별 ID |
+| `ok` | `boolean` | 단일 후보로 확정됐으면 `true` |
+| `itemSeq` | `string \| null` | 품목일련번호 |
+| `itemName` | `string \| null` | 품목명 |
+| `imageUrl` | `string \| null` | 알약 이미지 URL |
+| `identification` | `Identification` | 식별 신뢰도 (`HIGH`/`MEDIUM`/`LOW`) |
+| `recommendation` | `Recommendation \| null` | 증상-효능 추천. 증상 없거나 미확정이면 null |
+| `features` | `Features \| null` | 각인/모양/색상/분할선 |
+| `official` | `Official \| null` | e약은요 상세정보 (확정된 경우) |
+| `document` | `string \| null` | 상세정보를 이어 붙인 요약 텍스트 |
+
+#### Error Responses
+
+| 상태 코드 | 조건 | 응답 |
+|-----------|------|------|
+| `400` | `items` 빈 리스트 | `{"detail": "..."}` |
+| `400` | 개별 항목 `front_image` 누락 | `{"detail": "front_image는 필수이며 빈 문자열일 수 없습니다."}` |
+| `400` | 개별 항목 base64 디코딩 실패 | `{"detail": "Invalid base64 in field 'front_image'"}` |
+| `503` | Gemini Vision API 오류 | `{"detail": "Gemini vision error: ..."}` |
+
+> **참고:** 개별 항목의 식별 실패는 해당 항목의 `ok: false`로 표현되며, 다른 항목의 처리에는 영향을 주지 않습니다. 단, base64 디코딩 실패는 요청 전체가 400으로 반환됩니다 (디코딩은 병렬 처리 전에 수행).
+
+---
+
+### 3.7 `POST /admin/reload-pill-data` - 낱알식별 데이터 수동 적재
 
 낱알식별 API에서 전체 데이터를 다시 가져와 DB에 적재합니다.
 기존 데이터를 **TRUNCATE** 후 새로 INSERT합니다.
@@ -365,7 +551,7 @@ POST /admin/reload-pill-data
 
 ---
 
-### 3.6 `GET /health` - 헬스 체크
+### 3.8 `GET /health` - 헬스 체크
 
 ```http
 GET /health
@@ -392,6 +578,45 @@ GET /health
 | front_mime_type     | string           | No      | MIME 타입 (기본: image/jpeg) |
 | back_mime_type      | string | null    | No      | 뒷면 MIME 타입              |
 +---------------------+------------------+---------+----------------------------+
+```
+
+#### `BatchIdentifyDbItem`
+
+```
++---------------------+------------------+---------+------------------------------------+
+| Field               | Type             | Required| Description                        |
++---------------------+------------------+---------+------------------------------------+
+| id                  | string           | Yes     | 클라이언트 지정 알약 식별 ID         |
+| front_image         | string           | Yes     | 앞면 이미지 (base64/data URI)       |
+| back_image          | string | null    | No      | 뒷면 이미지                         |
+| front_mime_type     | string           | No      | MIME 타입 (기본: image/jpeg)         |
+| back_mime_type      | string | null    | No      | 뒷면 MIME 타입                      |
++---------------------+------------------+---------+------------------------------------+
+```
+
+#### `BatchIdentifyDbRequest`
+
+```
++---------------------+------------------------+---------+--------------------------------------------+
+| Field               | Type                   | Required| Description                                |
++---------------------+------------------------+---------+--------------------------------------------+
+| user                | UserInfo               | Yes     | 요청 유저 정보                               |
+| symptoms            | string[]               | No      | SymptomType enum 값 리스트 (추천 판단용)      |
+| items               | BatchIdentifyDbItem[]  | Yes     | 알약 이미지 세트 리스트 (≥1)                  |
++---------------------+------------------------+---------+--------------------------------------------+
+```
+
+#### `UserInfo`
+
+```
++---------------------+------------------------+---------+--------------------------------------------+
+| Field               | Type                   | Required| Description                                |
++---------------------+------------------------+---------+--------------------------------------------+
+| userId              | integer                | Yes     | 사용자 고유 ID (PK)                          |
+| name                | string                 | Yes     | 사용자 이름                                  |
+| gender              | string                 | Yes     | 성별 (MALE / FEMALE)                         |
+| birthDate           | string (YYYY-MM-DD)    | Yes     | 생년월일                                     |
++---------------------+------------------------+---------+--------------------------------------------+
 ```
 
 ### 4.2 Response Models
@@ -439,6 +664,35 @@ GET /health
 +---------------------+---------------------------+-------------------------------+
 | detail              | DrugDetailApiItem | null  | 상세정보 (없으면 null)        |
 +---------------------+---------------------------+-------------------------------+
+```
+
+#### `IdentifyResultItem` (`POST /identify/db/batch` 개별 결과)
+
+```
++---------------------+----------------------------------+-------------------------------+
+| Field               | Type                             | Description                   |
++---------------------+----------------------------------+-------------------------------+
+| id                  | string                           | 요청 시 보낸 알약 식별 ID      |
+| ok                  | boolean                          | 단일 후보 확정 여부            |
+| itemSeq             | string | null                    | 품목일련번호                   |
+| itemName            | string | null                    | 품목명                         |
+| imageUrl            | string | null                    | 알약 이미지 URL                |
+| identification      | Identification                   | 식별 신뢰도                    |
+| recommendation      | Recommendation | null            | 증상-효능 추천                 |
+| features            | Features | null                  | 각인/모양/색상/분할선           |
+| official            | Official | null                  | e약은요 상세정보               |
+| document            | string | null                    | 상세 요약 텍스트               |
++---------------------+----------------------------------+-------------------------------+
+```
+
+#### `BatchIdentifyDbResponse` (`POST /identify/db/batch`)
+
+```
++---------------------+----------------------------------+-------------------------------+
+| Field               | Type                             | Description                   |
++---------------------+----------------------------------+-------------------------------+
+| result              | IdentifyResultItem[]             | 요청 순서대로 결과 리스트       |
++---------------------+----------------------------------+-------------------------------+
 ```
 
 ### 4.3 Core Domain Models
@@ -916,6 +1170,30 @@ curl -X POST http://localhost:8000/identify \
   -H "Content-Type: application/json" \
   -d '{
     "front_image": "data:image/jpeg;base64,/9j/4AAQ..."
+  }'
+
+# 다중 알약 일괄 식별 (배치)
+curl -X POST http://localhost:8000/identify/db/batch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user": {
+      "userId": 1,
+      "name": "홍길동",
+      "gender": "MALE",
+      "birthDate": "1990-01-15"
+    },
+    "symptoms": ["HEADACHE", "FEVER"],
+    "items": [
+      {
+        "id": "1",
+        "front_image": "data:image/jpeg;base64,/9j/4AAQ..."
+      },
+      {
+        "id": "2",
+        "front_image": "data:image/jpeg;base64,/9j/4BBR...",
+        "back_image": "data:image/jpeg;base64,/9j/4CCT..."
+      }
+    ]
   }'
 
 # 후보 선택 (MULTIPLE_MATCHES 후)
