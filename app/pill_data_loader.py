@@ -51,7 +51,20 @@ INSERT INTO pill_identification
      color_class1, color_class2,
      line_front, line_back, form_code_name)
 VALUES
-    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON DUPLICATE KEY UPDATE
+    item_name      = VALUES(item_name),
+    entp_name      = VALUES(entp_name),
+    chart          = VALUES(chart),
+    item_image     = VALUES(item_image),
+    print_front    = VALUES(print_front),
+    print_back     = VALUES(print_back),
+    drug_shape     = VALUES(drug_shape),
+    color_class1   = VALUES(color_class1),
+    color_class2   = VALUES(color_class2),
+    line_front     = VALUES(line_front),
+    line_back      = VALUES(line_back),
+    form_code_name = VALUES(form_code_name);
 """
 
 FIELDS = [
