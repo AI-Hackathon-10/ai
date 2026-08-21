@@ -73,6 +73,8 @@ async def recommend_drugs_from_voice(
         symptom_text=symptom_text,
         onset_text=onset_text,
         reference_time=now,
+        gender=gender,
+        birth_date=birth_date,
     )
 
     if not extraction.symptoms:

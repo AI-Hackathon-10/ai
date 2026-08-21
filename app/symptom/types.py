@@ -24,7 +24,7 @@ class SymptomExtraction:
 
 
 class ExtractSymptomsFn(Protocol):
-    """STT 텍스트(증상 발화 + 발생시각 발화) -> SymptomExtraction."""
+    """STT 텍스트(증상 발화 + 발생시각 발화) + 사용자 정보 -> SymptomExtraction."""
 
     async def __call__(
         self,
@@ -32,6 +32,8 @@ class ExtractSymptomsFn(Protocol):
         symptom_text: str,
         onset_text: str,
         reference_time: datetime,
+        gender: Optional[str] = None,
+        birth_date: Optional[date] = None,
     ) -> SymptomExtraction: ...
 
 

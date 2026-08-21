@@ -41,8 +41,10 @@ async def extract_symptoms_and_onset(
     symptom_text: str,
     onset_text: str,
     reference_time: datetime,
+    gender: Optional[str] = None,
+    birth_date: Optional[date] = None,
 ) -> SymptomExtraction:
-    """증상/발생시각 STT 텍스트 -> 구조화된 SymptomExtraction.
+    """증상/발생시각 STT 텍스트 + 사용자 정보 -> 구조화된 SymptomExtraction.
 
     발화에서 명확히 확인되지 않는 내용은 만들어내지 않는다(스키마의 enum 제약
     + 프롬프트 규칙으로 강제). 응답 파싱/모델 호출 자체가 실패하면
@@ -51,10 +53,21 @@ async def extract_symptoms_and_onset(
     떨어뜨린다. 발생 시각 하나 때문에 전체 추천 흐름을 막지 않기 위해서다.
     """
     client = genai.Client()
+
+    today = datetime.now().date()
+    age: Optional[int] = None
+    if birth_date is not None:
+        age = today.year - birth_date.year - (
+            1 if (today.month, today.day) < (birth_date.month, birth_date.day) else 0
+        )
+    gender_ko = {"MALE": "남성", "FEMALE": "여성"}.get((gender or "").upper())
+
     prompt = build_symptom_extraction_prompt(
         symptom_text=symptom_text,
         onset_text=onset_text,
         reference_time_iso=reference_time.isoformat(),
+        age=age,
+        gender_ko=gender_ko,
     )
 
     try:

@@ -47,6 +47,10 @@ SYMPTOM_EXTRACTION_SYSTEM_PROMPT = f"""당신은 사용자의 음성을 텍스�
    - 목록: {", ".join(SYMPTOM_TYPES)}
 2. 목록에 없는 증상이거나 애매하면 절대 만들어 넣지 마세요. 아무 증상도 확실하지
    않으면 빈 배열([])을 반환하세요.
+3. 사용자의 나이·성별 정보가 주어지면, 증상 해석에 참고하세요.
+   예: 가임기 여성의 "배가 아파요"는 복통(ABDOMINAL_PAIN)과 함께
+   생리통(MENSTRUAL_CRAMPS)의 가능성도 고려하세요. 단, 발화에서
+   명확히 유추할 수 있는 경우에만 추가하고 근거 없이 추측하지 마세요.
 
 [발생 시각 규칙]
 1. 사용자에게 "지금 시각(reference_time)"이 함께 주어집니다. "3시간 전부터",
@@ -63,12 +67,28 @@ SYMPTOM_EXTRACTION_SYSTEM_PROMPT = f"""당신은 사용자의 음성을 텍스�
 """
 
 
-def build_symptom_extraction_prompt(*, symptom_text: str, onset_text: str, reference_time_iso: str) -> str:
+def build_symptom_extraction_prompt(
+    *,
+    symptom_text: str,
+    onset_text: str,
+    reference_time_iso: str,
+    age: Optional[int] = None,
+    gender_ko: Optional[str] = None,
+) -> str:
+    user_info = "정보 없음"
+    if age is not None and gender_ko:
+        user_info = f"{age}세 {gender_ko}"
+    elif age is not None:
+        user_info = f"{age}세"
+    elif gender_ko:
+        user_info = gender_ko
+
     return (
         f"지금 시각(reference_time): {reference_time_iso}\n\n"
+        f"[사용자 정보]\n{user_info}\n\n"
         f"[증상 발화 텍스트]\n{symptom_text}\n\n"
         f"[증상 발생 시각 발화 텍스트]\n{onset_text}\n\n"
-        "위 두 발화에서 증상과 발생 시각을 규칙에 따라 추출하세요."
+        "위 발화에서 증상과 발생 시각을 규칙에 따라 추출하세요."
     )
 
 
